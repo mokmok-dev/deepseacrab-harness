@@ -38,7 +38,7 @@
         let
           rustToolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-          src = pkgs.lib.cleanSourceWith { src = ./.; };
+          src = craneLib.cleanCargoSource ./.;
           commonArgs = {
             inherit src;
             strictDeps = true;
@@ -72,6 +72,8 @@
                   cargoArtifacts
                   ;
                 cargoTestExtraArgs = "--workspace --all-features";
+                SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+                NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
               }
             );
           };
