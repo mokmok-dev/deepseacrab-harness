@@ -8,8 +8,10 @@
 
 mod agui;
 mod chat;
+mod projects;
 
 pub use chat::RunRegistry;
+pub use projects::{Project, ProjectError, ProjectStore, ProjectView};
 
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
