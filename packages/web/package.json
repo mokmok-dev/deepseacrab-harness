@@ -1,5 +1,5 @@
 {
-  "name": "dsh-web",
+  "name": "@deepseacrab-harness/web",
   "private": true,
   "type": "module",
   "scripts": {

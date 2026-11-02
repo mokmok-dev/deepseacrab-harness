@@ -77,12 +77,11 @@ cargo run -p dsh-cli --bin dsh -- web
 # http://127.0.0.1:3080
 ```
 
-The browser client is a React app built with [TanStack AI](https://tanstack.com/ai/latest). Its source is `crates/dsh-web/web/`. The built single-file page is committed at `crates/dsh-web/static/index.html`, because the Nix build has no Node step; plain `cargo build` reads that file. Rebuild it after a client change:
+The browser client is a React app built with [TanStack AI](https://tanstack.com/ai/latest). Its source is `packages/web/`. The built single-file page is committed at `crates/dsh-web/static/index.html`, because the Nix build has no Node step; plain `cargo build` reads that file. Rebuild it from the repository root after a client change:
 
 ```sh
-cd crates/dsh-web/web
-npm install
-npm run build
+pnpm install
+pnpm --filter @deepseacrab-harness/web build
 ```
 
 The page talks to `POST /api/chat`, an AG-UI Server-Sent Events route. The client sends its session id as the AG-UI `threadId` and renders text, reasoning, and tool-call parts. The durable session log stays the source of truth: opening a session replays `GET /api/sessions/{id}`. A second run on the same session returns `409`, and dropping the response body, including a browser Stop or a closed tab, cancels the run.
