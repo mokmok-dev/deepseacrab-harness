@@ -19,6 +19,8 @@ dsh-cli
   ├── dsh-lsp      -> dsh-core
   ├── dsh-sandbox  -> dsh-core
   ├── dsh-credentials -> none
+  ├── dsh-ssh      -> dsh-core
+  ├── dsh-telemetry -> dsh-core
   ├── dsh-mcp      -> dsh-core
   ├── dsh-web      -> dsh-agent, dsh-core
   └── dsh-sdk      -> dsh-agent, dsh-core
@@ -116,6 +118,8 @@ Set `DSH_SANDBOX=bubblewrap` to route `bash` through `dsh-sandbox`. The provider
 
 `dsh-credentials` stores a JSON object of provider name to secret at `$DSH_HOME/credentials.json`. Writes go through a sibling temp file with mode `0600` and an atomic rename. The CLI's `auth` commands are the only writers, and the DeepSeek plugin falls back to the stored `deepseek` key when the environment variable is empty.
 
+`dsh-ssh` parses named hosts from `DSH_SSH_HOSTS` and exposes `ssh_run`. The remote command is one argv element after `--`, so it never passes through a local shell; BatchMode, a connect timeout, a wall-clock limit, and 64 KiB stream caps bound the call. `dsh-telemetry` keeps local run counters in `$DSH_HOME/telemetry.json`, and `dsh telemetry` prints the snapshot.
+
 `job_*` writes a small job directory under the session workspace. `job_start` redirects the child's streams to files, records the pid, and a waiter thread publishes an atomic status file. `job_list`, `job_output`, and `job_kill` read that durable state.
 
 Path policy lives in `dsh-core`:
@@ -170,4 +174,4 @@ Unit tests sit beside the code they exercise. Integration tests in `dsh-cli/test
 
 Property tests cover the shapes where examples are weak: event round-trips, projection order, SSE chunk splitting, retry delays, path normalization, edit semantics, and batch plans.
 
-`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across sixteen crates, with 926 caught and 314 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.
+`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across eighteen crates, with 968 caught and 333 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.

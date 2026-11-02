@@ -23,6 +23,8 @@ pub enum Command {
     Schedules(SchedulesArgs),
     /// Manage locally stored provider credentials.
     Auth(AuthArgs),
+    /// Print local run telemetry.
+    Telemetry,
     /// List registered tools.
     Tools,
     /// Print effective configuration.

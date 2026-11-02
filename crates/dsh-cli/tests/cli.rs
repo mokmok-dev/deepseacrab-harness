@@ -218,6 +218,43 @@ fn tools_lists_the_builtin_registry() {
 }
 
 #[test]
+fn telemetry_starts_at_zero_and_records_completed_runs() {
+    let home = fresh_home();
+    dsh()
+        .env("DSH_HOME", home.path())
+        .arg("telemetry")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"runs\": 0"))
+        .stdout(predicate::str::contains("\"completed\": 0"));
+
+    let (port, server) = spawn_sse_server();
+    let cwd = tempfile::tempdir().expect("temporary cwd");
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env("DEEPSEEK_API_KEY", "test-key")
+        .env("DEEPSEEK_BASE_URL", format!("http://127.0.0.1:{port}"))
+        .env("DSH_MAX_STEPS", "1")
+        .args([
+            "run",
+            "--cwd",
+            cwd.path().to_str().expect("utf-8 cwd"),
+            "say hello",
+        ])
+        .assert()
+        .success();
+    server.join().expect("sse server");
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .arg("telemetry")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"runs\": 1"))
+        .stdout(predicate::str::contains("\"completed\": 1"));
+}
+
+#[test]
 fn schedules_are_empty_and_do_not_need_a_key_when_nothing_is_due() {
     let home = fresh_home();
     dsh()

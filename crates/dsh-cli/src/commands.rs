@@ -29,6 +29,7 @@ pub async fn run() -> anyhow::Result<ExitCode> {
         Command::Sessions(args) => sessions(args),
         Command::Schedules(args) => schedules(args).await,
         Command::Auth(args) => auth(args).await,
+        Command::Telemetry => telemetry(),
         Command::Tools => tools(),
         Command::Config => show_config(),
         Command::Web { bind } => web(bind).await,
@@ -90,10 +91,20 @@ async fn run_task(args: RunArgs) -> anyhow::Result<ExitCode> {
     install_cancel_with(cancel.clone(), async {
         let _ = tokio::signal::ctrl_c().await;
     });
-    let outcome = agent
-        .run(&session_id, &task, cancel, Some(sink))
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
+    let outcome = match agent.run(&session_id, &task, cancel, Some(sink)).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let telemetry = dsh_telemetry::Telemetry::new(config.home.join("telemetry.json"));
+            if let Err(telemetry_error) = telemetry.record_failure() {
+                eprintln!("dsh: telemetry: {telemetry_error}");
+            }
+            return Err(anyhow!("{error}"));
+        }
+    };
+    let telemetry = dsh_telemetry::Telemetry::new(config.home.join("telemetry.json"));
+    if let Err(error) = telemetry.record(&outcome.outcome) {
+        eprintln!("dsh: telemetry: {error}");
+    }
 
     if !args.json {
         println!("{}", outcome.text);
@@ -249,6 +260,7 @@ fn build_runtime(config: &Config, env: &dyn Env) -> anyhow::Result<Runtime> {
         Box::new(dsh_terminal::TerminalPlugin),
         Box::new(dsh_mcp::McpPlugin::from_env()),
         Box::new(dsh_lsp::LspPlugin::from_env()),
+        Box::new(dsh_ssh::SshPlugin::from_env()),
     ];
     compose(&plugins, config, env).map_err(|error| anyhow!("{error}"))
 }
@@ -559,6 +571,14 @@ async fn auth(args: AuthArgs) -> anyhow::Result<ExitCode> {
             println!("{}", if removed { "removed" } else { "not found" });
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn telemetry() -> anyhow::Result<ExitCode> {
+    let config = config_from_env()?;
+    let store = dsh_telemetry::Telemetry::new(config.home.join("telemetry.json"));
+    let snapshot = store.load()?;
+    println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(ExitCode::SUCCESS)
 }
 

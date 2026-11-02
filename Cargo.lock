@@ -502,7 +502,9 @@ dependencies = [
  "dsh-schedule",
  "dsh-sdk",
  "dsh-session",
+ "dsh-ssh",
  "dsh-team",
+ "dsh-telemetry",
  "dsh-terminal",
  "dsh-tools",
  "dsh-web",
@@ -667,6 +669,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-ssh"
+version = "2026.11.1"
+dependencies = [
+ "async-trait",
+ "dsh-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "dsh-team"
 version = "2026.11.1"
 dependencies = [
@@ -682,6 +699,18 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "dsh-telemetry"
+version = "2026.11.1"
+dependencies = [
+ "dsh-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
