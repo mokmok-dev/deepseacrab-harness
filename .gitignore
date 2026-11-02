@@ -1,7 +1,6 @@
+**/node_modules
 .direnv
 .pre-commit-config.yaml
-crates/dsh-web/web/dist/
-crates/dsh-web/web/node_modules/
 mutants.out
 mutants.out.old
 result

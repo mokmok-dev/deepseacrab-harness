@@ -1,0 +1,12 @@
+packages:
+  - app/*
+  - packages/*
+
+catalog: null
+
+catalogMode: strict
+
+catalogPrune: true
+
+allowBuilds:
+  esbuild: true
