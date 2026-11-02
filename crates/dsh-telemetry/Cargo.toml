@@ -1,0 +1,20 @@
+[package]
+name = "dsh-telemetry"
+description = "Local run telemetry for the DeepSeek Harness Rust rewrite"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+dsh-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

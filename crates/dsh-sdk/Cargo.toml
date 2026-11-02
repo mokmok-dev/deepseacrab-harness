@@ -1,0 +1,24 @@
+[package]
+name = "dsh-sdk"
+description = "JSON-RPC SDK surface for the DeepSeek Harness Rust rewrite"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+dsh-agent.workspace = true
+dsh-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+proptest.workspace = true
+tokio-stream.workspace = true
+
+[lints]
+workspace = true

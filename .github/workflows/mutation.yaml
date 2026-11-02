@@ -1,0 +1,18 @@
+name: mutation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix develop --command cargo mutants --workspace --jobs 4 --timeout 300 --baseline run

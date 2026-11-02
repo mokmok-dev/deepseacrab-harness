@@ -1,0 +1,25 @@
+[package]
+name = "dsh-terminal"
+description = "Persistent PTY terminals for the DeepSeek Harness Rust rewrite"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+dsh-core.workspace = true
+portable-pty = "0.9.0"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

@@ -72,6 +72,8 @@
                   cargoArtifacts
                   ;
                 cargoTestExtraArgs = "--workspace --all-features";
+                SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+                NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
               }
             );
           };

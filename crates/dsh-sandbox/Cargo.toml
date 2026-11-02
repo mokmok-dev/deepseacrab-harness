@@ -1,0 +1,14 @@
+[package]
+name = "dsh-sandbox"
+description = "Execution confinement providers for the DeepSeek Harness Rust rewrite"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+dsh-core.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
