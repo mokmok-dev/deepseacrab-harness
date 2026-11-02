@@ -1,9 +1,10 @@
 import type { SessionSummary } from '../api';
 import { shortSessionId } from '../session';
+import { workspaceName } from '../workspace';
 
 type SidebarProps = {
   sessions: SessionSummary[];
-  activeSessionId: string;
+  activeSessionId: string | null;
   error: string | null;
   open: boolean;
   onSelect: (id: string) => void;
@@ -22,6 +23,10 @@ export function Sidebar({
   onRefresh,
   onClose,
 }: SidebarProps) {
+  const listed = sessions.filter(
+    (session) => session.event_count > 1 || session.id === activeSessionId,
+  );
+
   return (
     <aside className={open ? 'sidebar sidebar-open' : 'sidebar'} aria-label="Sessions">
       <div className="sidebar-head">
@@ -61,10 +66,10 @@ export function Sidebar({
         </p>
       )}
       <ul className="session-list" aria-label="Session list">
-        {sessions.length === 0 ? (
+        {listed.length === 0 ? (
           <li className="session-empty">No sessions yet.</li>
         ) : (
-          sessions.map((session) => (
+          listed.map((session) => (
             <li key={session.id}>
               <button
                 type="button"
@@ -77,7 +82,8 @@ export function Sidebar({
                   <span className="session-title">{session.title}</span>
                 )}
                 <span className="session-meta">
-                  {formatCreatedAt(session.created_at)} · {session.event_count} events
+                  {workspaceName(session.cwd)} · {formatCreatedAt(session.created_at)} ·{' '}
+                  {session.event_count} events
                 </span>
               </button>
             </li>

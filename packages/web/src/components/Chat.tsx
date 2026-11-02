@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchServerSentEvents, useChat, type UIMessage } from '@tanstack/ai-react';
 import { Composer } from './Composer';
 import { Transcript } from './Transcript';
-import { markSessionStarted, shortSessionId } from '../session';
+import { shortSessionId } from '../session';
+import { workspaceName } from '../workspace';
 
 const connection = fetchServerSentEvents('/api/chat');
 
@@ -16,6 +17,7 @@ type ChatProps = {
   sessionId: string;
   initialMessages: UIMessage[];
   loadError: string | null;
+  workspace: string | null;
   onRunFinished: () => void;
   onOpenSessions: () => void;
 };
@@ -26,6 +28,7 @@ export function Chat({
   sessionId,
   initialMessages,
   loadError,
+  workspace,
   onRunFinished,
   onOpenSessions,
 }: ChatProps) {
@@ -60,7 +63,6 @@ export function Chat({
   const send = () => {
     const text = draft.trim();
     if (text === '' || isLoading) return;
-    markSessionStarted(sessionId);
     setDraft('');
     void sendMessage(text);
   };
@@ -95,6 +97,11 @@ export function Chat({
           <span className="topbar-session" title={sessionId}>
             {shortSessionId(sessionId)}
           </span>
+          {workspace !== null && (
+            <span className="topbar-workspace" title={workspace}>
+              {workspaceName(workspace)}
+            </span>
+          )}
         </div>
         <span className={`status status-${tone}`} role="status">
           {label}
@@ -124,7 +131,11 @@ export function Chat({
               🦀
             </div>
             <h1>What should the harness do?</h1>
-            <p>Each session runs in the workspace served by this process.</p>
+            <p>
+              {workspace === null
+                ? 'Tools, shell commands, and subagents run where the server was started.'
+                : `Tools, shell commands, and subagents run in ${workspace}.`}
+            </p>
             <div className="examples">
               {EXAMPLES.map((prompt) => (
                 <button

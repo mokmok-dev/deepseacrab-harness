@@ -40,13 +40,11 @@ export type Compaction = {
 };
 
 type ManagementEventType =
-  | 'session_created'
   | 'turn_started'
   | 'step_started'
   | 'todo_written'
   | 'plan_set'
   | 'goal_set'
-  | 'working_directory_changed'
   | 'retry_attempt';
 
 export type SessionEvent =
@@ -55,6 +53,8 @@ export type SessionEvent =
   | { type: 'tool_result'; message: ToolMessage }
   | { type: 'turn_ended'; turn_id: string; outcome: TurnOutcome }
   | ({ type: 'compaction' } & Compaction)
+  | { type: 'session_created'; cwd: string | null }
+  | { type: 'working_directory_changed'; cwd: string | null }
   | { type: ManagementEventType };
 
 export type EventRecord = {
@@ -62,6 +62,22 @@ export type EventRecord = {
   at: number;
   event: SessionEvent;
 };
+
+/**
+ * The directory a session's tools run in, read the same way the server reads it.
+ * An empty value is skipped because an empty path is a prefix of every path.
+ */
+export function latestWorkspace(records: EventRecord[]): string | null {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record === undefined) continue;
+    const event = record.event;
+    if (event.type === 'working_directory_changed' || event.type === 'session_created') {
+      if (event.cwd !== null && event.cwd !== '') return event.cwd;
+    }
+  }
+  return null;
+}
 
 type ToolCallPart = Extract<UIMessage['parts'][number], { type: 'tool-call' }>;
 
