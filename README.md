@@ -1,6 +1,6 @@
-# DeepSeacrab Harness
+# DeepSeaCrab Harness
 
-A Rust rewrite of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for headless use. It keeps the upstream architecture where it earns its place: an append-only session log, a provider-neutral model seam, a guarded tool pipeline, and plugin composition. It drops the desktop application and the browser client.
+A Rust rewrite of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for headless use. It keeps the upstream architecture where it earns its place: an append-only session log, a provider-neutral model seam, a guarded tool pipeline, and plugin composition. It drops the upstream desktop application and its browser client, and ships a small local browser client of its own.
 
 The binary is `dsh`.
 
@@ -10,11 +10,11 @@ The headless product works end to end. A task can be submitted from the CLI, the
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 839 tests passed.
+- `cargo test --workspace`: 869 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
 - `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The eighteen crates produced 1031 caught viable mutants and 347 unviable mutants.
-- `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
+- `dsh web` was exercised over a real socket with a local Messages provider: health, the built React page, the tool catalog, a streamed text run, a tool run with arguments and output, session replay, Stop cancellation, and a mobile viewport.
 
 ## Quick start
 
@@ -76,6 +76,16 @@ Open the browser client:
 cargo run -p dsh-cli --bin dsh -- web
 # http://127.0.0.1:3080
 ```
+
+The browser client is a React app built with [TanStack AI](https://tanstack.com/ai/latest). Its source is `crates/dsh-web/web/`. The built single-file page is committed at `crates/dsh-web/static/index.html`, because the Nix build has no Node step; plain `cargo build` reads that file. Rebuild it after a client change:
+
+```sh
+cd crates/dsh-web/web
+npm install
+npm run build
+```
+
+The page talks to `POST /api/chat`, an AG-UI Server-Sent Events route. The client sends its session id as the AG-UI `threadId` and renders text, reasoning, and tool-call parts. The durable session log stays the source of truth: opening a session replays `GET /api/sessions/{id}`. A second run on the same session returns `409`, and dropping the response body, including a browser Stop or a closed tab, cancels the run.
 
 Serve the JSON-RPC SDK on stdio:
 

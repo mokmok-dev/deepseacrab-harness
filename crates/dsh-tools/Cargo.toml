@@ -1,6 +1,6 @@
 [package]
 name = "dsh-tools"
-description = "Model-facing tools for the DeepSeek Harness Rust rewrite"
+description = "Model-facing tools for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

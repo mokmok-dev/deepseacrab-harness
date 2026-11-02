@@ -1,6 +1,6 @@
 [package]
 name = "dsh-ssh"
-description = "SSH execution tools for the DeepSeek Harness Rust rewrite"
+description = "SSH execution tools for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "dsh-lsp"
-description = "Language Server Protocol tools for the DeepSeek Harness Rust rewrite"
+description = "Language Server Protocol tools for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

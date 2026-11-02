@@ -1,6 +1,6 @@
 [package]
 name = "dsh-agent"
-description = "Turn and step driver for the DeepSeek Harness Rust rewrite"
+description = "Turn and step driver for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

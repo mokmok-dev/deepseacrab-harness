@@ -1,6 +1,6 @@
 [package]
 name = "dsh-sdk"
-description = "JSON-RPC SDK surface for the DeepSeek Harness Rust rewrite"
+description = "JSON-RPC SDK surface for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

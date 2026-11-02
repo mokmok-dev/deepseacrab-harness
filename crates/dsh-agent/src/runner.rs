@@ -126,6 +126,12 @@ pub enum RunEvent {
         /// Tool name.
         name: String,
     },
+    /// A fragment of a tool call's JSON arguments.
+    ToolCallArgs {
+        id: dsh_core::ToolCallId,
+        /// Raw argument text as the provider sent it.
+        arguments: String,
+    },
     /// A tool call settled.
     ToolResult {
         /// Call identity.
@@ -307,6 +313,19 @@ impl AgentLoop {
                         stream = Some(value);
                         break;
                     }
+                    Err(_) if cancel.is_cancelled() => {
+                        return self.finish_turn(
+                            session_id,
+                            &turn_id,
+                            TurnOutcome::Cancelled {
+                                reason: "cancelled while opening the model stream".to_string(),
+                            },
+                            final_text,
+                            usage,
+                            steps,
+                            &sink,
+                        );
+                    }
                     Err(error) if error.is_retryable() && attempt < self.config.max_retries => {
                         let attempt_number = attempt.saturating_add(1);
                         self.append(
@@ -374,10 +393,21 @@ impl AgentLoop {
                             }
                         }
                         Some(Err(error)) => {
-                            failure = Some(AgentError::Stream(error));
+                            // A provider reports the aborted request as a transport
+                            // failure, so the token decides whether this was a stop.
+                            if cancel.is_cancelled() {
+                                cancelled = true;
+                            } else {
+                                failure = Some(AgentError::Stream(error));
+                            }
                             break;
                         }
-                        None => break,
+                        None => {
+                            if cancel.is_cancelled() {
+                                cancelled = true;
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -840,6 +870,15 @@ fn emit_stream_event(sink: &Option<EventSink>, event: &StreamEvent) {
                 RunEvent::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
+                },
+            );
+        }
+        StreamEvent::ToolCallDelta { id, arguments } if !arguments.is_empty() => {
+            emit(
+                sink,
+                RunEvent::ToolCallArgs {
+                    id: id.clone(),
+                    arguments: arguments.clone(),
                 },
             );
         }
@@ -1876,6 +1915,68 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::significant_drop_tightening)]
+    async fn tool_call_argument_fragments_reach_the_sink() {
+        let id = ToolCallId::parse("call-1").expect("id");
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            vec![
+                Ok(StreamEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: "echo".to_string(),
+                }),
+                Ok(StreamEvent::ToolCallDelta {
+                    id: id.clone(),
+                    arguments: String::new(),
+                }),
+                Ok(StreamEvent::ToolCallDelta {
+                    id: id.clone(),
+                    arguments: r#"{"value""#.to_string(),
+                }),
+                Ok(StreamEvent::ToolCallDelta {
+                    id: id.clone(),
+                    arguments: ":1}".to_string(),
+                }),
+                Ok(StreamEvent::Finish {
+                    reason: FinishReason::ToolCalls,
+                }),
+            ],
+            text_response("done"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let loop_ = AgentLoop::new(
+            store,
+            provider,
+            tools(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let sink: EventSink = Arc::new(move |event| {
+            captured.lock().expect("events").push(event);
+        });
+        loop_
+            .run(&session_id, "hi", CancellationToken::new(), Some(sink))
+            .await
+            .expect("run");
+        let events = events.lock().expect("events");
+        let fragments: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                RunEvent::ToolCallArgs { arguments, .. } => Some(arguments.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fragments, [r#"{"value""#, ":1}"]);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RunEvent::ToolCallArgs { id: call, .. } if call == &id
+        )));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::significant_drop_tightening)]
     async fn provider_failure_emits_an_error_event() {
         let store = Arc::new(MockStore::default());
         let session_id = SessionId::generate();
@@ -2139,6 +2240,87 @@ mod tests {
         assert!(matches!(outcome.outcome, TurnOutcome::Cancelled { .. }));
         let events = store.load(&session_id).expect("load");
         assert_eq!(events.last().expect("last").event.kind(), "turn_ended");
+    }
+
+    struct CancelOnOpen;
+
+    #[async_trait]
+    impl LlmProvider for CancelOnOpen {
+        fn name(&self) -> &'static str {
+            "cancel-on-open"
+        }
+
+        async fn stream(
+            &self,
+            _request: LlmRequest,
+            cancel: CancellationToken,
+        ) -> Result<LlmStream, LlmError> {
+            cancel.cancel();
+            Err(LlmError::transport("Messages request cancelled"))
+        }
+    }
+
+    struct CancelDuringStream;
+
+    #[async_trait]
+    impl LlmProvider for CancelDuringStream {
+        fn name(&self) -> &'static str {
+            "cancel-during-stream"
+        }
+
+        async fn stream(
+            &self,
+            _request: LlmRequest,
+            cancel: CancellationToken,
+        ) -> Result<LlmStream, LlmError> {
+            Ok(Box::pin(stream::iter(vec![
+                Ok(StreamEvent::TextDelta {
+                    text: "partial".to_string(),
+                }),
+                {
+                    cancel.cancel();
+                    Err(LlmError::transport("Messages request cancelled"))
+                },
+            ])))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_opening_the_stream_is_recorded_as_cancelled() {
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let loop_ = AgentLoop::new(
+            store,
+            Arc::new(CancelOnOpen),
+            tools(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "hi", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(matches!(outcome.outcome, TurnOutcome::Cancelled { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_after_a_stop_is_recorded_as_cancelled() {
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let loop_ = AgentLoop::new(
+            store,
+            Arc::new(CancelDuringStream),
+            tools(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "hi", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(matches!(outcome.outcome, TurnOutcome::Cancelled { .. }));
     }
 
     #[tokio::test]

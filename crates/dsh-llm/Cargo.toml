@@ -1,6 +1,6 @@
 [package]
 name = "dsh-llm"
-description = "Messages streaming adapter for the DeepSeek Harness Rust rewrite"
+description = "Messages streaming adapter for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

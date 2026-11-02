@@ -1,6 +1,6 @@
 [package]
 name = "dsh-team"
-description = "Durable agent teams for the DeepSeek Harness Rust rewrite"
+description = "Durable agent teams for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

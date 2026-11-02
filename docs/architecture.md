@@ -174,7 +174,7 @@ Configuration parsing is pure through `Config::from_lookup_with`; the process en
 
 ## Surfaces
 
-`dsh-web` serves one axum router with the HTML page, `GET /api/health`, `GET /api/sessions`, `GET /api/sessions/{id}`, `GET /api/tools`, and `POST /api/run`. A run is a POST SSE stream. The page reads the response body with `fetch` and a stream reader, appends text and tool frames to the transcript, and refreshes the session list. The router is exercised with `tower::ServiceExt::oneshot`, and the CLI was exercised over a real socket against a local SSE provider.
+`dsh-web` serves one axum router with the built React page, `GET /api/health`, `GET /api/sessions`, `GET /api/sessions/{id}`, `GET /api/tools`, and `POST /api/chat`. `POST /api/chat` accepts an AG-UI `RunAgentInput` and streams AG-UI events as SSE. The React client uses TanStack AI's `useChat` with `fetchServerSentEvents`; it renders text, reasoning, and tool-call parts and replays the durable log. A per-session run registry rejects a second concurrent run with 409, and dropping the response body cancels the run. The router is exercised with `tower::ServiceExt::oneshot`, and the browser client was exercised over a real socket against a local Messages provider.
 
 `dsh-sdk` reads one JSON-RPC request per line from any async reader and writes one frame per line to any async writer. `run` emits an `event` notification per `RunEvent` and settles with `{session_id, outcome, text}`. It also serves `sessions.list`, `sessions.show`, `tools.list`, and `config`. `serve_io` is generic over the reader and writer; the CLI owns the process stdio boundary.
 

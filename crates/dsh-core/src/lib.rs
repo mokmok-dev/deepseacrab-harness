@@ -26,7 +26,8 @@ pub use event::{
     EventRecord, GoalPhase, SessionEvent, TodoItem, TodoStatus, TurnOutcome, derive_messages,
 };
 pub use ids::{
-    EventSeq, IdError, MessageId, ModelId, ProviderId, SessionId, StepId, ToolCallId, TurnId,
+    EventSeq, IdError, MAX_ID_LEN, MessageId, ModelId, ProviderId, SessionId, StepId, ToolCallId,
+    TurnId,
 };
 pub use llm::{
     FinishReason, LlmError, LlmErrorCode, LlmProvider, LlmRequest, LlmStream, ReasoningEffort,

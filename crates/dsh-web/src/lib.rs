@@ -6,29 +6,31 @@
 //! [`router`] is a pure function of [`WebState`], so the whole surface can be
 //! driven with `tower::ServiceExt::oneshot` without binding a socket.
 
-use axum::body::Bytes;
-use axum::extract::{Path, State};
+mod agui;
+mod chat;
+
+pub use chat::RunRegistry;
+
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
-use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use dsh_agent::{AgentConfig, AgentError, AgentLoop, EventSink, RunEvent};
+use dsh_agent::{AgentConfig, AgentError};
 use dsh_core::{
     Clock, EventRecord, IdError, LlmProvider, SessionId, SessionStore, SessionSummary, StoreError,
     ToolRegistry, ToolSchema,
 };
-use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::mpsc;
-use tokio_stream::StreamExt;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 /// The chat page served at `/`.
 const INDEX_HTML: &str = include_str!("../static/index.html");
+
+/// The client posts its whole transcript, which grows with the session.
+const CHAT_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Everything one HTTP request may use.
 #[derive(Clone)]
@@ -43,6 +45,7 @@ pub struct WebState {
     pub config: AgentConfig,
     /// Wall clock stamped on durable writes.
     pub clock: Arc<dyn Clock>,
+    pub runs: RunRegistry,
 }
 
 /// Failures that keep the server from running.
@@ -64,10 +67,12 @@ pub enum WebError {
 
 /// A request the API refused or could not answer.
 #[derive(Debug, Error)]
-enum ApiError {
+pub(crate) enum ApiError {
     /// The request body or path did not match the contract.
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Conflict(String),
     /// Durable storage failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -83,6 +88,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Store(StoreError::NotFound(_)) => StatusCode::NOT_FOUND,
             Self::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -94,38 +100,6 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// The wire body of `POST /api/run`.
-#[derive(Deserialize)]
-struct RunRequest {
-    task: String,
-    #[serde(default)]
-    session_id: Option<String>,
-}
-
-/// A run request whose fields passed the boundary checks.
-struct RunPlan {
-    task: String,
-    session_id: SessionId,
-}
-
-impl RunRequest {
-    fn plan(body: &[u8]) -> Result<RunPlan, ApiError> {
-        let request: Self = serde_json::from_slice(body)
-            .map_err(|error| ApiError::BadRequest(format!("invalid request body: {error}")))?;
-        if request.task.trim().is_empty() {
-            return Err(ApiError::BadRequest("task must not be empty".to_string()));
-        }
-        let session_id = match request.session_id {
-            Some(raw) => SessionId::parse(raw)?,
-            None => SessionId::generate(),
-        };
-        Ok(RunPlan {
-            task: request.task,
-            session_id,
-        })
-    }
-}
-
 /// Build the HTTP surface for one harness deployment.
 pub fn router(state: WebState) -> Router {
     Router::new()
@@ -134,7 +108,10 @@ pub fn router(state: WebState) -> Router {
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", get(session_log))
         .route("/api/tools", get(list_tools))
-        .route("/api/run", post(run_task))
+        .route(
+            "/api/chat",
+            post(chat::chat).layer(DefaultBodyLimit::max(CHAT_BODY_LIMIT)),
+        )
         .with_state(state)
 }
 
@@ -147,8 +124,12 @@ pub async fn serve(
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|source| WebError::Bind { addr: bind, source })?;
+    let runs = state.runs.clone();
     axum::serve(listener, router(state))
-        .with_graceful_shutdown(async move { cancel.cancelled().await })
+        .with_graceful_shutdown(async move {
+            cancel.cancelled().await;
+            runs.cancel_all();
+        })
         .await
         .map_err(WebError::Serve)
 }
@@ -179,52 +160,12 @@ async fn list_tools(State(state): State<WebState>) -> Json<Vec<ToolSchema>> {
     Json(state.tools.schemas())
 }
 
-async fn run_task(State(state): State<WebState>, body: Bytes) -> Result<Response, ApiError> {
-    let plan = RunRequest::plan(&body)?;
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let sink: EventSink = Arc::new(move |event| {
-        let _ = sender.send(event);
-    });
-    tokio::spawn(async move {
-        let result = match AgentLoop::new(
-            state.store,
-            state.provider,
-            state.tools,
-            state.config,
-            state.clock,
-        ) {
-            Ok(agent) => {
-                agent
-                    .run(
-                        &plan.session_id,
-                        &plan.task,
-                        CancellationToken::new(),
-                        Some(Arc::clone(&sink)),
-                    )
-                    .await
-            }
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            sink(failure_event(&error));
-        }
-    });
-    let frames = UnboundedReceiverStream::new(receiver)
-        .map(|event| serde_json::to_string(&event).map(|data| Event::default().data(data)));
-    Ok(Sse::new(frames).into_response())
-}
-
-fn failure_event(error: &AgentError) -> RunEvent {
-    let code = match error {
+/// The stable machine code for a failure that skipped the turn driver.
+pub(crate) const fn failure_code(error: &AgentError) -> &'static str {
+    match error {
         AgentError::Store(_) => "STORE_ERROR",
         AgentError::InvalidProviderName(_) => "INVALID_PROVIDER",
-        // The driver settles provider and stream failures into a turn itself,
-        // so only a failure that skipped that path reaches this arm.
         _ => "AGENT_ERROR",
-    };
-    RunEvent::Error {
-        code: code.to_string(),
-        message: error.to_string(),
     }
 }
 
@@ -237,10 +178,9 @@ mod tests {
     use axum::http::header::CONTENT_TYPE;
     use dsh_core::{
         EventSeq, FinishReason, FixedClock, LlmError, LlmRequest, LlmStream, ModelId, SessionEvent,
-        SessionHeader, StreamEvent, Tool, ToolCallId, ToolContext, ToolOutcome,
+        SessionHeader, StreamEvent, Tool, ToolCallId, ToolContext, ToolOutcome, TurnOutcome,
     };
     use http_body_util::BodyExt;
-    use proptest::prelude::*;
     use serde_json::{Value, json};
     use std::collections::{BTreeMap, VecDeque};
     use std::path::PathBuf;
@@ -418,6 +358,23 @@ mod tests {
         }
     }
 
+    struct PendingProvider;
+
+    #[async_trait]
+    impl LlmProvider for PendingProvider {
+        fn name(&self) -> &'static str {
+            "pending"
+        }
+
+        async fn stream(
+            &self,
+            _request: LlmRequest,
+            _cancel: CancellationToken,
+        ) -> Result<LlmStream, LlmError> {
+            Ok(Box::pin(tokio_stream::pending()))
+        }
+    }
+
     struct EchoTool;
 
     #[async_trait]
@@ -461,6 +418,7 @@ mod tests {
             tools: tools(),
             config: config(),
             clock: Arc::new(FixedClock(1_000)),
+            runs: chat::RunRegistry::new(),
         }
     }
 
@@ -563,22 +521,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[CONTENT_TYPE], "text/html; charset=utf-8");
         let html = body_text(response).await;
-        for control in [
-            "id=\"task\"",
-            "id=\"session\"",
-            "id=\"send\"",
-            "id=\"transcript\"",
-            "id=\"sessions\"",
-        ] {
-            assert!(html.contains(control), "page is missing {control}");
-        }
         assert!(
-            html.contains("fetch('/api/run'"),
-            "page must post the run to the streaming endpoint"
+            html.contains("id=\"root\""),
+            "page must mount the React client"
         );
         assert!(
-            html.contains("JSON.stringify({ task, session_id: sessionId || undefined })"),
-            "page must send the run request shape"
+            html.contains("/api/chat"),
+            "page must stream its runs from the AG-UI route"
         );
     }
 
@@ -701,20 +650,156 @@ mod tests {
         );
     }
 
+    fn agui_body(thread: &str, run: &str, text: &str) -> String {
+        json!({
+            "threadId": thread,
+            "runId": run,
+            "messages": [{ "role": "user", "content": text }],
+        })
+        .to_string()
+    }
+
+    fn agui_request(body: &str) -> Request<Body> {
+        post_request("/api/chat", body)
+    }
+
+    async fn wait_for_event(store: &MockStore, session: &SessionId, kind: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let reached = store
+                    .load(session)
+                    .is_ok_and(|records| records.iter().any(|record| record.event.kind() == kind));
+                if reached {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("event {kind} must arrive"));
+    }
+
+    async fn wait_for_turn_end(store: &MockStore, session: &SessionId) -> TurnOutcome {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let outcome = store.load(session).ok().and_then(|records| {
+                    records.iter().find_map(|record| match &record.event {
+                        SessionEvent::TurnEnded { outcome, .. } => Some(outcome.clone()),
+                        _ => None,
+                    })
+                });
+                if let Some(outcome) = outcome {
+                    return outcome;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("turn must end")
+    }
+
     #[tokio::test]
-    async fn run_rejects_invalid_requests() {
+    async fn agui_streams_a_text_turn() {
+        let store = Arc::new(MockStore::default());
+        let state = web_state(store.clone(), Arc::new(text_provider("hello")));
+        let response = execute(
+            state,
+            agui_request(&agui_body("session-chat", "run-1", "hi")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], "text/event-stream");
+        let frames = frames(&body_text(response).await);
+        assert_eq!(
+            event_types(&frames),
+            [
+                "RUN_STARTED",
+                "TEXT_MESSAGE_START",
+                "TEXT_MESSAGE_CONTENT",
+                "TEXT_MESSAGE_END",
+                "RUN_FINISHED",
+            ]
+        );
+        assert_eq!(frames[0]["threadId"], "session-chat");
+        assert_eq!(frames[0]["runId"], "run-1");
+        assert_eq!(frames[1]["role"], "assistant");
+        assert_eq!(frames[2]["messageId"], frames[1]["messageId"]);
+        assert_eq!(frames[2]["delta"], "hello");
+        assert_eq!(frames[3]["messageId"], frames[1]["messageId"]);
+        assert_eq!(frames[4]["threadId"], "session-chat");
+        assert_eq!(frames[4]["runId"], "run-1");
+
+        let session_id = SessionId::parse("session-chat").expect("id");
+        let log = store.load(&session_id).expect("log");
+        assert!(
+            log.iter()
+                .any(|record| record.event.kind() == "user_message")
+        );
+        assert!(log.iter().any(|record| record.event.kind() == "turn_ended"));
+    }
+
+    #[tokio::test]
+    async fn agui_streams_tool_calls_before_the_text_turn() {
+        let state = web_state(
+            Arc::new(MockStore::default()),
+            Arc::new(tool_then_text_provider()),
+        );
+        let body = json!({
+            "threadId": "session-chat",
+            "runId": "run-1",
+            "messages": [{ "role": "user", "content": "use the echo tool" }],
+            "state": {},
+            "tools": [],
+            "context": [],
+            "forwardedProps": {},
+        })
+        .to_string();
+        let response = execute(state, agui_request(&body)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let frames = frames(&body_text(response).await);
+        assert_eq!(
+            event_types(&frames),
+            [
+                "RUN_STARTED",
+                "TOOL_CALL_START",
+                "TOOL_CALL_ARGS",
+                "TOOL_CALL_END",
+                "TOOL_CALL_RESULT",
+                "TEXT_MESSAGE_START",
+                "TEXT_MESSAGE_CONTENT",
+                "TEXT_MESSAGE_END",
+                "RUN_FINISHED",
+            ]
+        );
+        assert_eq!(frames[1]["toolCallId"], "call-1");
+        assert_eq!(frames[1]["toolCallName"], "echo");
+        assert_eq!(frames[2]["toolCallId"], "call-1");
+        assert_eq!(frames[2]["delta"], r#"{"text":"hi"}"#);
+        assert_eq!(frames[3]["toolCallId"], "call-1");
+        assert_eq!(frames[4]["toolCallId"], "call-1");
+        assert_eq!(frames[4]["role"], "tool");
+        assert_eq!(frames[4]["content"], r#"{"text":"hi"}"#);
+        assert!(frames[4].get("metadata").is_none());
+        assert_eq!(frames[6]["delta"], "done");
+    }
+
+    #[tokio::test]
+    async fn agui_rejects_invalid_requests() {
         for body in [
-            r#"{"task":""}"#,
-            r#"{"task":"  \n\t "}"#,
-            r#"{"session_id":"session-known"}"#,
+            r#"{"threadId":"session-chat","runId":"run-1","messages":[]}"#,
+            r#"{"threadId":"session-chat","runId":"run-1","messages":[{"role":"user","content":"  \n "}]}"#,
+            r#"{"threadId":"session-chat","runId":"run-1","messages":[{"role":"user","parts":[{"type":"text","text":" "}]}]}"#,
+            r#"{"threadId":"session-chat","runId":"run-1"}"#,
+            r#"{"threadId":"session-chat","runId":"","messages":[{"role":"user","content":"hi"}]}"#,
+            r#"{"threadId":"","runId":"run-1","messages":[{"role":"user","content":"hi"}]}"#,
+            r#"{"threadId":"session-chat","runId":"run-1","messages":[{"role":"user","content":"hi"}"#,
             "not json",
-            r#"{"task":"hi","session_id":""}"#,
         ] {
             let state = web_state(
                 Arc::new(MockStore::default()),
                 Arc::new(text_provider("hi")),
             );
-            let response = execute(state, post_request("/api/run", body)).await;
+            let response = execute(state, agui_request(body)).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "body {body}");
             assert!(
                 json_body(&body_text(response).await)["error"]
@@ -726,90 +811,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_streams_text_tool_and_final_events() {
-        let store = Arc::new(MockStore::default());
-        let state = web_state(store.clone(), Arc::new(tool_then_text_provider()));
-        let response = execute(
-            state,
-            post_request("/api/run", r#"{"task":"use the echo tool"}"#),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[CONTENT_TYPE], "text/event-stream");
-        let frames = frames(&body_text(response).await);
-        assert_eq!(
-            event_types(&frames),
-            ["session", "tool_call", "tool_result", "text", "final"]
-        );
-        assert_eq!(frames[1]["name"], "echo");
-        assert_eq!(frames[1]["id"], "call-1");
-        assert_eq!(frames[2]["is_error"], false);
-        assert!(
-            frames[2]["output"]
-                .as_str()
-                .is_some_and(|output| output.contains("hi"))
-        );
-        assert_eq!(frames[3]["text"], "done");
-        assert_eq!(frames[4]["text"], "done");
-        assert_eq!(frames[4]["outcome"]["outcome"], "completed");
-        let session_id = frames[0]["session_id"].as_str().expect("session id");
-        assert!(session_id.starts_with("session-"));
-        let log = store
-            .load(&SessionId::parse(session_id).expect("id"))
-            .expect("log");
-        assert!(
-            log.iter()
-                .any(|record| record.event.kind() == "user_message")
-        );
-        assert!(log.iter().any(|record| record.event.kind() == "turn_ended"));
-    }
-
-    #[tokio::test]
-    async fn run_uses_the_requested_session() {
-        let store = Arc::new(MockStore::default());
-        let state = web_state(store.clone(), Arc::new(text_provider("hi")));
-        let response = execute(
-            state,
-            post_request("/api/run", r#"{"task":"hi","session_id":"session-known"}"#),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let frames = frames(&body_text(response).await);
-        assert_eq!(frames[0]["session_id"], "session-known");
-        let log = store
-            .load(&SessionId::parse("session-known").expect("id"))
-            .expect("log");
-        assert!(
-            log.iter()
-                .any(|record| record.event.kind() == "user_message")
-        );
-    }
-
-    #[tokio::test]
-    async fn run_reports_setup_failures_as_an_error_event() {
+    async fn agui_reports_setup_failures_as_run_errors() {
         let state = web_state(
             Arc::new(MockStore::default()),
             Arc::new(ScriptedProvider::named("")),
         );
-        let response = execute(state, post_request("/api/run", r#"{"task":"hi"}"#)).await;
+        let response = execute(
+            state,
+            agui_request(&agui_body("session-chat", "run-1", "hi")),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         let frames = frames(&body_text(response).await);
-        assert_eq!(event_types(&frames), ["error"]);
-        assert_eq!(frames[0]["code"], "INVALID_PROVIDER");
+        assert_eq!(event_types(&frames), ["RUN_STARTED", "RUN_ERROR"]);
+        assert_eq!(frames[1]["code"], "INVALID_PROVIDER");
         assert!(
-            frames[0]["message"]
+            frames[1]["message"]
                 .as_str()
                 .is_some_and(|message| !message.is_empty())
         );
     }
 
     #[tokio::test]
-    async fn run_reports_store_failures_as_an_error_event() {
+    async fn agui_reports_store_failures_as_run_errors() {
         let state = web_state(Arc::new(BrokenStore), Arc::new(text_provider("hi")));
-        let response = execute(state, post_request("/api/run", r#"{"task":"hi"}"#)).await;
+        let response = execute(
+            state,
+            agui_request(&agui_body("session-chat", "run-1", "hi")),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         let frames = frames(&body_text(response).await);
-        assert_eq!(event_types(&frames), ["session", "error"]);
+        assert_eq!(event_types(&frames), ["RUN_STARTED", "RUN_ERROR"]);
         assert_eq!(frames[1]["code"], "STORE_ERROR");
         assert!(
             frames[1]["message"]
@@ -818,8 +851,95 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn agui_rejects_a_second_run_on_a_busy_session() {
+        let state = web_state(
+            Arc::new(MockStore::default()),
+            Arc::new(text_provider("hi")),
+        );
+        let session_id = SessionId::parse("session-chat").expect("id");
+        let held = state.runs.reserve(&session_id).expect("reserved");
+        let response = execute(
+            state,
+            agui_request(&agui_body("session-chat", "run-1", "hi")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            json_body(&body_text(response).await)["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty())
+        );
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn agui_dropping_the_body_cancels_the_run() {
+        let store = Arc::new(MockStore::default());
+        let state = web_state(store.clone(), Arc::new(PendingProvider));
+        let response = execute(
+            state,
+            agui_request(&agui_body("session-chat", "run-1", "hi")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let session_id = SessionId::parse("session-chat").expect("id");
+        wait_for_event(&store, &session_id, "turn_started").await;
+
+        drop(response.into_body());
+
+        let outcome = wait_for_turn_end(&store, &session_id).await;
+        assert!(
+            matches!(outcome, TurnOutcome::Cancelled { .. }),
+            "dropping the body must cancel the run, got {outcome:?}"
+        );
+    }
+
     #[test]
-    fn failure_events_use_stable_codes() {
+    fn run_registry_reserves_one_run_per_session() {
+        let registry = RunRegistry::new();
+        let session = SessionId::parse("session-1").expect("id");
+        let other = SessionId::parse("session-2").expect("id");
+        let (guard, token) = registry.reserve(&session).expect("first run");
+        assert!(registry.reserve(&session).is_none());
+        assert!(registry.reserve(&other).is_some());
+        assert!(!token.is_cancelled());
+        drop(guard);
+        assert!(registry.reserve(&session).is_some());
+    }
+
+    #[test]
+    fn run_registry_cancel_all_cancels_every_run() {
+        let registry = RunRegistry::new();
+        let session = SessionId::parse("session-1").expect("id");
+        let other = SessionId::parse("session-2").expect("id");
+        let (guard, token) = registry.reserve(&session).expect("first run");
+        let (other_guard, other_token) = registry.reserve(&other).expect("second run");
+
+        registry.cancel_all();
+        assert!(token.is_cancelled());
+        assert!(other_token.is_cancelled());
+        assert!(registry.reserve(&session).is_some());
+
+        drop(guard);
+        drop(other_guard);
+    }
+
+    #[test]
+    fn a_stale_guard_does_not_free_a_newer_reservation() {
+        let registry = RunRegistry::new();
+        let session = SessionId::parse("session-1").expect("id");
+        let (stale, _token) = registry.reserve(&session).expect("first run");
+        registry.cancel_all();
+        let (current, _token) = registry.reserve(&session).expect("second run");
+        drop(stale);
+        assert!(registry.reserve(&session).is_none());
+        drop(current);
+        assert!(registry.reserve(&session).is_some());
+    }
+
+    #[test]
+    fn failure_codes_are_stable() {
         let cases = [
             (
                 AgentError::Store(StoreError::Backend("boom".to_string())),
@@ -837,11 +957,8 @@ mod tests {
             ),
         ];
         for (error, expected) in cases {
-            let RunEvent::Error { code, message } = failure_event(&error) else {
-                panic!("expected an error frame for {error}");
-            };
-            assert_eq!(code, expected);
-            assert_ne!(message, "");
+            assert_eq!(failure_code(&error), expected);
+            assert_ne!(error.to_string(), "");
         }
     }
 
@@ -880,29 +997,5 @@ mod tests {
             .await
             .expect_err("address is already bound");
         assert!(matches!(error, WebError::Bind { addr, .. } if addr == address));
-    }
-
-    proptest! {
-        #[test]
-        fn run_requests_accept_exactly_non_blank_tasks(task in ".*") {
-            let body = json!({ "task": task }).to_string();
-            match RunRequest::plan(body.as_bytes()) {
-                Ok(plan) => {
-                    prop_assert!(!task.trim().is_empty(), "accepted a blank task {:?}", task);
-                    prop_assert_eq!(plan.task.as_str(), task.as_str());
-                    prop_assert!(plan.session_id.as_str().starts_with("session-"));
-                }
-                Err(_) => prop_assert!(task.trim().is_empty(), "rejected a task {:?}", task),
-            }
-        }
-
-        #[test]
-        fn run_requests_honor_the_requested_session(raw in ".*") {
-            let body = json!({ "task": "hi", "session_id": raw }).to_string();
-            match RunRequest::plan(body.as_bytes()) {
-                Ok(plan) => prop_assert_eq!(plan.session_id.as_str(), raw.as_str()),
-                Err(_) => prop_assert!(SessionId::parse(raw).is_err()),
-            }
-        }
     }
 }
