@@ -163,7 +163,7 @@ Property tests cover session event round-trips, message projection, SSE chunk bo
 
 ## What is out of scope
 
-The desktop application, browser client, MCP, LSP, browser and computer use, ACP, subagents, workflows, goals, schedules, compaction, image input, and the Python/TypeScript SDKs are not ported. See [docs/rewrite-scope.md](docs/rewrite-scope.md) for the reason each is absent and what a next slice would cover.
+The desktop application, browser automation, computer use, ACP, the remote API/BFF, dynamic plugin loading and the plugin market, and full i18n are not ported. The local browser client, MCP, LSP, SSH, PTY, sandbox, credentials, and telemetry are present. See [docs/final-status.md](docs/final-status.md) for the reason each remaining surface is a separate program.
 
 ## License
 

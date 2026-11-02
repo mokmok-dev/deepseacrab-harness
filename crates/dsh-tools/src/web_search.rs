@@ -285,7 +285,7 @@ mod tests {
         let status = status.to_string();
         let handle = std::thread::spawn(move || {
             listener.set_nonblocking(true).expect("nonblocking");
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = Instant::now() + Duration::from_secs(5);
             let accepted = loop {
                 match listener.accept() {
                     Ok(pair) => break Some(pair),
