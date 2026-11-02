@@ -10,10 +10,10 @@ The headless product works end to end. A task can be submitted from the CLI, the
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 574 tests passed.
+- `cargo test --workspace`: 659 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The twelve crates produced 717 caught viable mutants and 252 unviable mutants.
+- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The thirteen crates produced 833 caught viable mutants and 273 unviable mutants.
 - `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
 
 ## Quick start
@@ -97,6 +97,7 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 | `DSH_RETRY_BASE_MS` | `500` | Base delay for exponential retry backoff. |
 | `DSH_MAX_CONTEXT_CHARS` | `200000` | Estimated history size that triggers compaction. |
 | `DSH_MCP_SERVERS` | none | JSON array of MCP stdio server configurations. |
+| `DSH_LSP_SERVERS` | none | JSON array of LSP stdio server configurations. |
 | `DSH_REASONING_EFFORT` | `high` | `off`, `low`, `high`, or `max`. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | Tool permission mode. |
 | `DSH_HOME` | platform data directory | Session database and harness state. |
@@ -104,7 +105,7 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 
 ## Architecture
 
-The workspace is twelve crates. Dependencies point downward only.
+The workspace is thirteen crates. Dependencies point downward only.
 
 | Crate | Owns |
 |---|---|
@@ -115,6 +116,7 @@ The workspace is twelve crates. Dependencies point downward only.
 | `dsh-jobs` | Background shell job tools. |
 | `dsh-schedule` | Durable scheduled follow-ups and their tools. |
 | `dsh-terminal` | Persistent PTY terminals and their tools. |
+| `dsh-lsp` | LSP stdio client and the `lsp` tool. |
 | `dsh-mcp` | MCP stdio client that registers external tools. |
 | `dsh-agent` | Turn and step driver, streaming assembly, tool batching, subagents. |
 | `dsh-web` | Browser client with JSON and SSE routes. |
@@ -123,7 +125,7 @@ The workspace is twelve crates. Dependencies point downward only.
 
 The full design is in [docs/architecture.md](docs/architecture.md). The upstream coverage table and the deliberate omissions are in [docs/rewrite-scope.md](docs/rewrite-scope.md).
 
-The model-facing registry contains 30 first-party tools in a run: `bash`, `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, `ralph`, `job_start`, `job_list`, `job_output`, `job_kill`, `schedule_create`, `schedule_list`, `schedule_cancel`, `terminal_open`, `terminal_read`, `terminal_write`, and `terminal_close`. `dsh tools` lists the 27 statically composed tools; `subagent`, `workflow`, and `ralph` are added with their child-session seams at run time. MCP servers add one tool per remote declaration.
+The model-facing registry contains 31 first-party tools in a run: `bash`, `read_file`, `read_image`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, `ralph`, `job_start`, `job_list`, `job_output`, `job_kill`, `schedule_create`, `schedule_list`, `schedule_cancel`, `terminal_open`, `terminal_read`, `terminal_write`, and `terminal_close`. `dsh tools` lists the 28 statically composed tools; `subagent`, `workflow`, and `ralph` are added with their child-session seams at run time. An `lsp` tool appears when `DSH_LSP_SERVERS` configures language servers, and MCP servers add one tool per remote declaration.
 
 ## Safety
 

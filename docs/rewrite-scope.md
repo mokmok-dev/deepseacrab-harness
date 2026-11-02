@@ -19,7 +19,7 @@ All six are verified. See the root README for the measured counts.
 
 - **M1, foundation: complete.** Session header, fork, export, search, and repair; bounded retry; durable compaction; todo, plan, goal, working-directory, and session-search tools; `glob`, `str_replace_editor`, and `skill`.
 - **M2, delegation and work: partial.** `subagent`, `workflow`, `ralph`, the four `job_*` tools, and the `schedule_*` tools with `schedules run-due` are in. Agent teams are not.
-- **M3, integrations and execution: partial.** MCP stdio, `web_search`, and persistent PTY terminals are in. LSP, SSH, OS sandboxing, image input, and browser or computer use are not.
+- **M3, integrations and execution: partial.** MCP stdio, `web_search`, persistent PTY terminals, the LSP tool, and inline image input are in. SSH, OS sandboxing, file attachments, and browser or computer use are not.
 - **M4, surfaces and distribution: partial.** The browser client and the JSON-RPC SDK are in. ACP, the API/BFF, plugin manager and market, stored credentials, telemetry, and i18n are not.
 - **M5, hardening: pending.** Cross-platform checks, session-format migrations, performance gates, and the remaining snapshot matrix are not done.
 
@@ -45,7 +45,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `sandbox` | Partial | Permission modes and lexical path policy. No OS-level confinement. |
 | `fs/fs-local`, `tool-fs`, `tool-fs-search`, `tool-str-replace-editor` | Ported subset | `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`. No patch format, observation policy, or LSP-guided edits. |
 | `web/tool-web` | Partial | `web_fetch` and `web_search`. No alternate search provider. |
-| `lsp` | Not ported | |
+| `lsp` | Ported subset | Hover, definition, references, and document symbols over Content-Length framed JSON-RPC. No diagnostics, completion, rename, or code actions. |
 | `skill` | Not ported | |
 | `computer-use`, `browser-use` | Not ported | |
 | `compaction` | Not ported | History grows until the provider limit. |
@@ -60,7 +60,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `preset`, `guard` | Not ported | `max_steps` is the only loop guard. |
 | `extensions` | Not ported | Runtime self-modification would require a dynamic loader. |
 | `session-query` | Partial | `sessions list` and `sessions show`. |
-| `attachment` | Not ported | Text only. |
+| `attachment` | Partial | `read_image` attaches inline PNG, JPEG, WebP, or GIF bytes up to 10 MiB. No file attachments, file API, or image offload. |
 | `spill` | Partial | Hard caps on stream, file, and web body sizes. |
 | `storage`, `workspace` | Partial | `DSH_HOME`, SQLite database, and session working directory. |
 | `feedback`, `identity`, `settings`, `credentials` | Partial | Environment configuration and one credential variable. |
@@ -111,6 +111,8 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | 2026-11-02 | Schedules live in an atomically replaced JSON file | A scheduled follow-up is small, global, and human-inspectable. SQLite would add a schema and a second connection for no gain at this size. |
 | 2026-11-02 | Ralph rounds are bounded fresh child sessions | Each round gets the immutable objective and the previous handoff, and the child registry removes all delegation tools. The loop ends after the round cap or a failed round. |
 | 2026-11-02 | Terminals are process-local and bounded | A PTY cannot survive the harness process without a supervisor. A per-terminal cursor and a 1 MiB rolling log give the model incremental output without unbounded memory. |
+| 2026-11-02 | LSP uses Content-Length framing and a bounded unmatched-frame budget | LSP framing differs from MCP newline framing. A server that never answers must not hang the tool, so unmatched frames are bounded. |
+| 2026-11-02 | Images are inline base64 content blocks | `read_image` attaches the pixels beside a caption, and the Messages serializer maps the block to an inline `image` source. No Files API or image offload in this pass. |
 | 2026-11-02 | Jobs use a durable directory, not in-memory handles | A job must survive the process that started it. Pid, output, and status files make listing and output reads independent of the agent. |
 | 2026-11-02 | MCP tools are prefixed with the server name | Two servers can expose the same tool name; the registry rejects duplicates. The prefix keeps both available. |
 | 2026-11-02 | The web run is a POST SSE stream | `EventSource` only supports GET. A POST stream lets the browser send the task and consume frames from one request. |

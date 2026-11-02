@@ -234,6 +234,7 @@ fn build_runtime(config: &Config, env: &dyn Env) -> anyhow::Result<Runtime> {
         Box::new(dsh_schedule::SchedulePlugin),
         Box::new(dsh_terminal::TerminalPlugin),
         Box::new(dsh_mcp::McpPlugin::from_env()),
+        Box::new(dsh_lsp::LspPlugin::from_env()),
     ];
     compose(&plugins, config, env).map_err(|error| anyhow!("{error}"))
 }

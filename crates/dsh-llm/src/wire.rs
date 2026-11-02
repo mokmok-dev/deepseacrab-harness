@@ -91,6 +91,35 @@ pub enum WireBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    /// An inline image in a user turn.
+    Image {
+        /// Encoded image source.
+        source: WireImageSource,
+    },
+}
+
+/// An inline base64 image source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireImageSource {
+    /// Source discriminator.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// MIME type.
+    pub media_type: String,
+    /// Base64 bytes.
+    pub data: String,
+}
+
+impl WireImageSource {
+    /// Build a base64 source.
+    #[must_use]
+    pub fn base64(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self {
+            kind: "base64".to_string(),
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
 }
 
 /// Input accepted inside a user turn or tool result.
@@ -101,6 +130,11 @@ pub enum WireInput {
     Text {
         /// The text.
         text: String,
+    },
+    /// Inline image bytes.
+    Image {
+        /// Encoded image source.
+        source: WireImageSource,
     },
 }
 
@@ -248,7 +282,10 @@ fn build_messages(history: &[Message]) -> Vec<WireMessage> {
     for message in &mut messages {
         message.content.sort_by_key(|block| match block {
             WireBlock::ToolResult { .. } => 0,
-            WireBlock::Text { .. } | WireBlock::Thinking { .. } | WireBlock::ToolUse { .. } => 1,
+            WireBlock::Text { .. }
+            | WireBlock::Thinking { .. }
+            | WireBlock::ToolUse { .. }
+            | WireBlock::Image { .. } => 1,
         });
     }
     messages
@@ -262,6 +299,9 @@ fn user_block(block: &ContentBlock) -> Option<WireBlock> {
         ContentBlock::Text { .. }
         | ContentBlock::Reasoning { .. }
         | ContentBlock::ToolCall { .. } => None,
+        ContentBlock::Image { media_type, data } => Some(WireBlock::Image {
+            source: WireImageSource::base64(media_type.clone(), data.clone()),
+        }),
     }
 }
 
@@ -270,7 +310,7 @@ fn assistant_block(block: &ContentBlock) -> Option<WireBlock> {
         ContentBlock::Text { text } if !text.is_empty() => {
             Some(WireBlock::Text { text: text.clone() })
         }
-        ContentBlock::Text { .. } => None,
+        ContentBlock::Text { .. } | ContentBlock::Image { .. } => None,
         ContentBlock::Reasoning { text } => Some(WireBlock::Thinking {
             thinking: text.clone(),
         }),
@@ -293,6 +333,9 @@ fn tool_result_block(tool: &dsh_core::ToolMessage) -> WireBlock {
             ContentBlock::Text { .. }
             | ContentBlock::Reasoning { .. }
             | ContentBlock::ToolCall { .. } => None,
+            ContentBlock::Image { media_type, data } => Some(WireInput::Image {
+                source: WireImageSource::base64(media_type.clone(), data.clone()),
+            }),
         })
         .collect();
     WireBlock::ToolResult {
@@ -332,7 +375,8 @@ fn validate_pairing(messages: &[WireMessage]) -> Result<(), LlmError> {
                     WireBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
                     WireBlock::Text { .. }
                     | WireBlock::Thinking { .. }
-                    | WireBlock::ToolUse { .. } => None,
+                    | WireBlock::ToolUse { .. }
+                    | WireBlock::Image { .. } => None,
                 });
                 match pending.take() {
                     Some(mut calls) => {
@@ -1768,6 +1812,34 @@ mod tests {
         .expect_err("server");
         assert_eq!(error.code, LlmErrorCode::Server);
         assert_eq!(error.message, "DeepSeek Messages stream error");
+    }
+
+    #[test]
+    fn image_blocks_map_to_base64_sources() {
+        let image = ContentBlock::image("image/png", "AAAA");
+        assert_eq!(
+            user_block(&image),
+            Some(WireBlock::Image {
+                source: WireImageSource::base64("image/png", "AAAA"),
+            })
+        );
+        assert_eq!(assistant_block(&image), None);
+        let tool = dsh_core::ToolMessage {
+            id: MessageId::generate(),
+            call_id: dsh_core::ToolCallId::parse("call-1").expect("id"),
+            content: vec![image],
+            is_error: false,
+        };
+        assert_eq!(
+            tool_result_block(&tool),
+            WireBlock::ToolResult {
+                tool_use_id: "call-1".to_string(),
+                content: vec![WireInput::Image {
+                    source: WireImageSource::base64("image/png", "AAAA"),
+                }],
+                is_error: Some(false),
+            }
+        );
     }
 
     proptest! {

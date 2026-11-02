@@ -495,6 +495,7 @@ dependencies = [
  "dsh-core",
  "dsh-jobs",
  "dsh-llm",
+ "dsh-lsp",
  "dsh-mcp",
  "dsh-schedule",
  "dsh-sdk",
@@ -564,6 +565,21 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "dsh-lsp"
+version = "2026.11.1"
+dependencies = [
+ "async-trait",
+ "dsh-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -650,6 +666,7 @@ name = "dsh-tools"
 version = "2026.11.1"
 dependencies = [
  "async-trait",
+ "base64",
  "dsh-core",
  "glob",
  "proptest",

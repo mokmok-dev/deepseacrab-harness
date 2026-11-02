@@ -242,7 +242,9 @@ impl ToolOutcome {
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::Text { text } => Some(text.as_str()),
-                ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => None,
+                ContentBlock::Reasoning { .. }
+                | ContentBlock::ToolCall { .. }
+                | ContentBlock::Image { .. } => None,
             })
             .collect()
     }

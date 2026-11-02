@@ -65,6 +65,13 @@ pub enum ContentBlock {
         /// The invocation.
         call: ToolCall,
     },
+    /// An inline image supplied by the user or a tool.
+    Image {
+        /// MIME type such as `image/png`.
+        media_type: String,
+        /// Base64-encoded image bytes.
+        data: String,
+    },
 }
 
 impl ContentBlock {
@@ -86,12 +93,21 @@ impl ContentBlock {
         Self::ToolCall { call }
     }
 
+    /// Build an inline image block.
+    #[must_use]
+    pub fn image(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Image {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
     /// The block's text when it carries text.
     #[must_use]
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text { text } | Self::Reasoning { text } => Some(text),
-            Self::ToolCall { .. } => None,
+            Self::ToolCall { .. } | Self::Image { .. } => None,
         }
     }
 }
@@ -236,7 +252,9 @@ impl AssistantMessage {
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::ToolCall { call } => Some(call),
-                ContentBlock::Text { .. } | ContentBlock::Reasoning { .. } => None,
+                ContentBlock::Text { .. }
+                | ContentBlock::Reasoning { .. }
+                | ContentBlock::Image { .. } => None,
             })
             .collect()
     }
@@ -385,7 +403,9 @@ impl Message {
                 .iter()
                 .filter_map(|block| match block {
                     ContentBlock::ToolCall { call } => Some(call),
-                    ContentBlock::Text { .. } | ContentBlock::Reasoning { .. } => None,
+                    ContentBlock::Text { .. }
+                    | ContentBlock::Reasoning { .. }
+                    | ContentBlock::Image { .. } => None,
                 })
                 .collect(),
             Self::System(_) | Self::Developer(_) | Self::User(_) | Self::Tool(_) => Vec::new(),
@@ -398,7 +418,9 @@ fn join_text(blocks: &[ContentBlock]) -> String {
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(text.as_str()),
-            ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => None,
+            ContentBlock::Reasoning { .. }
+            | ContentBlock::ToolCall { .. }
+            | ContentBlock::Image { .. } => None,
         })
         .collect()
 }
@@ -588,6 +610,15 @@ mod tests {
             ToolCall::new(ToolCallId::parse("call-1").expect("id"), "", "{}"),
             Err(MessageError::EmptyToolName)
         );
+    }
+
+    #[test]
+    fn image_blocks_round_trip_without_text() {
+        let block = ContentBlock::image("image/png", "AAAA");
+        assert_eq!(block.as_text(), None);
+        let json = serde_json::to_string(&block).expect("serialize");
+        let decoded: ContentBlock = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, block);
     }
 
     #[test]

@@ -21,6 +21,7 @@ dsh-web.workspace = true
 dsh-sdk.workspace = true
 dsh-schedule.workspace = true
 dsh-terminal.workspace = true
+dsh-lsp.workspace = true
 dsh-core.workspace = true
 dsh-llm.workspace = true
 dsh-session.workspace = true

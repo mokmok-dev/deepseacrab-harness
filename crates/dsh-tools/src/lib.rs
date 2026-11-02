@@ -17,6 +17,7 @@ mod glob;
 mod http;
 mod input;
 mod listing;
+mod read_image;
 mod reading;
 mod searching;
 mod session_tools;
@@ -66,6 +67,7 @@ fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(glob::GlobTool),
         Arc::new(searching::GrepTool),
         Arc::new(listing::ListDirTool),
+        Arc::new(read_image::ReadImageTool),
         Arc::new(reading::ReadFileTool),
         Arc::new(session_tools::SessionSearchTool),
         Arc::new(skill::SkillTool),
@@ -100,6 +102,7 @@ mod tests {
             "grep",
             "list_dir",
             "read_file",
+            "read_image",
             "session_search",
             "skill",
             "str_replace_editor",
