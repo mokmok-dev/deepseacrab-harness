@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react';
 import type { UIMessage } from '@tanstack/ai-react';
+import { TextPart } from '@tanstack/ai-react/ui';
 import { ToolCallCard, ToolResultCard } from './ToolCallCard';
 
 type TranscriptProps = {
@@ -62,9 +63,14 @@ function renderPart(
   switch (part.type) {
     case 'text':
       return part.content === '' ? [] : [
-        <div key={key} className="text-part">
-          {part.content}
-        </div>,
+        <TextPart
+          key={key}
+          content={part.content}
+          className="text-part"
+          components={{
+            a: (props) => <a {...props} target="_blank" rel="noreferrer" />,
+          }}
+        />,
       ];
     case 'thinking':
       return part.content === '' ? [] : [
