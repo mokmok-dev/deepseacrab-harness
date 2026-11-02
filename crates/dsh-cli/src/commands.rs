@@ -171,6 +171,7 @@ async fn web(bind: String) -> anyhow::Result<ExitCode> {
         tools,
         config: agent_config,
         clock: Arc::new(SystemClock) as Arc<dyn Clock>,
+        runs: dsh_web::RunRegistry::new(),
     };
     let cancel = CancellationToken::new();
     install_cancel_with(cancel.clone(), async {
