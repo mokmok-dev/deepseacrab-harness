@@ -19,6 +19,7 @@ dsh-jobs.workspace = true
 dsh-mcp.workspace = true
 dsh-web.workspace = true
 dsh-sdk.workspace = true
+dsh-schedule.workspace = true
 dsh-core.workspace = true
 dsh-llm.workspace = true
 dsh-session.workspace = true
@@ -33,6 +34,8 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
 

@@ -470,6 +470,7 @@ version = "2026.11.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "chrono",
  "clap",
  "dsh-agent",
@@ -477,10 +478,12 @@ dependencies = [
  "dsh-jobs",
  "dsh-llm",
  "dsh-mcp",
+ "dsh-schedule",
  "dsh-sdk",
  "dsh-session",
  "dsh-tools",
  "dsh-web",
+ "futures-util",
  "predicates",
  "serde",
  "serde_json",
@@ -557,6 +560,24 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "dsh-schedule"
+version = "2026.11.1"
+dependencies = [
+ "async-trait",
+ "dsh-agent",
+ "dsh-core",
+ "futures-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

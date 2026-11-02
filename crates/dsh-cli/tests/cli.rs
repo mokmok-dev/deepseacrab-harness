@@ -215,6 +215,25 @@ fn tools_lists_the_builtin_registry() {
 }
 
 #[test]
+fn schedules_are_empty_and_do_not_need_a_key_when_nothing_is_due() {
+    let home = fresh_home();
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["schedules", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no schedules"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DEEPSEEK_API_KEY")
+        .args(["schedules", "run-due"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no due schedules"));
+}
+
+#[test]
 fn run_streams_a_local_sse_response() {
     let (port, server) = spawn_sse_server();
     let home = fresh_home();

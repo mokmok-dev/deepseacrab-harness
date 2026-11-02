@@ -18,7 +18,7 @@ All six are verified. See the root README for the measured counts.
 ## Milestone status
 
 - **M1, foundation: complete.** Session header, fork, export, search, and repair; bounded retry; durable compaction; todo, plan, goal, working-directory, and session-search tools; `glob`, `str_replace_editor`, and `skill`.
-- **M2, delegation and work: partial.** `subagent` and the four `job_*` tools are in. Workflows, schedules, agent teams, and the Ralph loop are not.
+- **M2, delegation and work: partial.** `subagent`, `workflow`, the four `job_*` tools, and the `schedule_*` tools with `schedules run-due` are in. Agent teams and the Ralph loop are not.
 - **M3, integrations and execution: partial.** MCP stdio and `web_search` are in. LSP, persistent PTY, SSH, OS sandboxing, image input, and browser or computer use are not.
 - **M4, surfaces and distribution: partial.** The browser client and the JSON-RPC SDK are in. ACP, the API/BFF, plugin manager and market, stored credentials, telemetry, and i18n are not.
 - **M5, hardening: pending.** Cross-platform checks, session-format migrations, performance gates, and the remaining snapshot matrix are not done.
@@ -52,7 +52,10 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `subagent` | Not ported | |
 | `jobs` | Ported | `job_start`, `job_list`, `job_output`, `job_kill` over a durable job directory. |
 | `bundle` | Replaced | The CLI composes `Plugin` values directly. |
-| `workflow`, `todo`, `plan`, `goal`, `schedule`, `preset`, `guard` | Not ported | `max_steps` is the only loop guard. |
+| `workflow` | Partial | Ordered child-session steps with stop-on-failure. No script engine, branching, or parallel stages. |
+| `todo`, `plan`, `goal` | Partial | Session facts and model tools for each. No automatic goal continuation or plan approval UI. |
+| `schedule` | Partial | Interval schedules, create/list/cancel tools, and `schedules run-due`. No RFC 5545 recurrence. |
+| `preset`, `guard` | Not ported | `max_steps` is the only loop guard. |
 | `extensions` | Not ported | Runtime self-modification would require a dynamic loader. |
 | `session-query` | Partial | `sessions list` and `sessions show`. |
 | `attachment` | Not ported | Text only. |
@@ -102,6 +105,8 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | 2026-11-02 | Retry is bounded by a `for` loop | A guard-only loop could retry forever if a mutation or a bug removed the attempt bound. The loop bound is structural. |
 | 2026-11-02 | Compaction keeps the current turn by sequence | A summary event appended after the current user message would otherwise erase it. `keep_from` retains facts at or after the turn's first user fact. |
 | 2026-11-02 | Subagents build a child loop without the subagent tool | The child registry is a clone taken before the tool inserts itself, so delegation depth is bounded by construction. |
+| 2026-11-02 | Workflow is an ordered child-session list | It reuses the subagent seams and stops after a failed step by default. A script engine needs a parser, a sandbox, and a result protocol that this pass does not have. |
+| 2026-11-02 | Schedules live in an atomically replaced JSON file | A scheduled follow-up is small, global, and human-inspectable. SQLite would add a schema and a second connection for no gain at this size. |
 | 2026-11-02 | Jobs use a durable directory, not in-memory handles | A job must survive the process that started it. Pid, output, and status files make listing and output reads independent of the agent. |
 | 2026-11-02 | MCP tools are prefixed with the server name | Two servers can expose the same tool name; the registry rejects duplicates. The prefix keeps both available. |
 | 2026-11-02 | The web run is a POST SSE stream | `EventSource` only supports GET. A POST stream lets the browser send the task and consume frames from one request. |

@@ -10,6 +10,7 @@ members = [
   "crates/dsh-mcp",
   "crates/dsh-web",
   "crates/dsh-sdk",
+  "crates/dsh-schedule",
 ]
 resolver = "3"
 
@@ -61,6 +62,7 @@ dsh-jobs = { path = "crates/dsh-jobs" }
 dsh-mcp = { path = "crates/dsh-mcp" }
 dsh-web = { path = "crates/dsh-web" }
 dsh-sdk = { path = "crates/dsh-sdk" }
+dsh-schedule = { path = "crates/dsh-schedule" }
 
 [workspace.lints.clippy]
 all = "warn"

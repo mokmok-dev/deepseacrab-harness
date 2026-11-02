@@ -1,6 +1,8 @@
 //! Command implementations.
 
-use crate::cli::{Cli, Command, RunArgs, SessionsArgs, SessionsCommand};
+use crate::cli::{
+    Cli, Command, RunArgs, SchedulesArgs, SchedulesCommand, SessionsArgs, SessionsCommand,
+};
 use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use dsh_agent::{AgentConfig, AgentLoop, EventSink, RunEvent};
@@ -24,6 +26,7 @@ pub async fn run() -> anyhow::Result<ExitCode> {
     match cli.command {
         Command::Run(args) => run_task(args).await,
         Command::Sessions(args) => sessions(args),
+        Command::Schedules(args) => schedules(args).await,
         Command::Tools => tools(),
         Command::Config => show_config(),
         Command::Web { bind } => web(bind).await,
@@ -62,29 +65,16 @@ async fn run_task(args: RunArgs) -> anyhow::Result<ExitCode> {
     };
     let env = SystemEnv;
     let runtime = build_runtime(&config, &env)?;
-    let agent_config = AgentConfig {
-        model: ModelId::parse(&config.model)?,
-        system_prompt: config.system_prompt.clone(),
-        max_tokens: config.max_tokens,
-        effort: config.effort,
-        max_steps: config.max_steps,
-        max_parallel_tools: config.max_parallel_tools,
-        permission: config.permission,
-        cwd,
-        max_retries: config.max_retries,
-        retry_base_ms: config.retry_base_ms,
-        max_context_chars: config.max_context_chars,
-        parent_session: None,
-    };
+    let agent_config = agent_config(&config, cwd)?;
     let mut tools = runtime.tools;
-    let subagent = Arc::new(dsh_agent::SubagentTool::new(
-        Arc::clone(&runtime.store),
-        Arc::clone(&runtime.provider),
-        tools.clone(),
-        agent_config.clone(),
-        Arc::new(SystemClock) as Arc<dyn Clock>,
-    ));
-    tools.insert(subagent)?;
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    add_delegation_tools(
+        &mut tools,
+        &runtime.store,
+        &runtime.provider,
+        &agent_config,
+        &clock,
+    )?;
     let agent = AgentLoop::new(
         runtime.store,
         runtime.provider,
@@ -123,29 +113,16 @@ async fn web(bind: String) -> anyhow::Result<ExitCode> {
     let cwd = resolve_cwd(None)?;
     let env = SystemEnv;
     let runtime = build_runtime(&config, &env)?;
-    let agent_config = AgentConfig {
-        model: ModelId::parse(&config.model)?,
-        system_prompt: config.system_prompt.clone(),
-        max_tokens: config.max_tokens,
-        effort: config.effort,
-        max_steps: config.max_steps,
-        max_parallel_tools: config.max_parallel_tools,
-        permission: config.permission,
-        cwd,
-        max_retries: config.max_retries,
-        retry_base_ms: config.retry_base_ms,
-        max_context_chars: config.max_context_chars,
-        parent_session: None,
-    };
+    let agent_config = agent_config(&config, cwd)?;
     let mut tools = runtime.tools;
-    let subagent = Arc::new(dsh_agent::SubagentTool::new(
-        Arc::clone(&runtime.store),
-        Arc::clone(&runtime.provider),
-        tools.clone(),
-        agent_config.clone(),
-        Arc::new(SystemClock) as Arc<dyn Clock>,
-    ));
-    tools.insert(subagent)?;
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    add_delegation_tools(
+        &mut tools,
+        &runtime.store,
+        &runtime.provider,
+        &agent_config,
+        &clock,
+    )?;
     let address: std::net::SocketAddr = bind.parse().context("invalid bind address")?;
     let state = dsh_web::WebState {
         store: runtime.store,
@@ -170,29 +147,16 @@ async fn sdk() -> anyhow::Result<ExitCode> {
     let cwd = resolve_cwd(None)?;
     let env = SystemEnv;
     let runtime = build_runtime(&config, &env)?;
-    let agent_config = AgentConfig {
-        model: ModelId::parse(&config.model)?,
-        system_prompt: config.system_prompt.clone(),
-        max_tokens: config.max_tokens,
-        effort: config.effort,
-        max_steps: config.max_steps,
-        max_parallel_tools: config.max_parallel_tools,
-        permission: config.permission,
-        cwd,
-        max_retries: config.max_retries,
-        retry_base_ms: config.retry_base_ms,
-        max_context_chars: config.max_context_chars,
-        parent_session: None,
-    };
+    let agent_config = agent_config(&config, cwd)?;
     let mut tools = runtime.tools;
-    let subagent = Arc::new(dsh_agent::SubagentTool::new(
-        Arc::clone(&runtime.store),
-        Arc::clone(&runtime.provider),
-        tools.clone(),
-        agent_config.clone(),
-        Arc::new(SystemClock) as Arc<dyn Clock>,
-    ));
-    tools.insert(subagent)?;
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    add_delegation_tools(
+        &mut tools,
+        &runtime.store,
+        &runtime.provider,
+        &agent_config,
+        &clock,
+    )?;
     let state = dsh_sdk::SdkState {
         store: runtime.store,
         provider: runtime.provider,
@@ -211,6 +175,49 @@ async fn sdk() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn agent_config(config: &Config, cwd: PathBuf) -> anyhow::Result<AgentConfig> {
+    Ok(AgentConfig {
+        model: ModelId::parse(&config.model)?,
+        system_prompt: config.system_prompt.clone(),
+        max_tokens: config.max_tokens,
+        effort: config.effort,
+        max_steps: config.max_steps,
+        max_parallel_tools: config.max_parallel_tools,
+        permission: config.permission,
+        cwd,
+        state_dir: config.home.clone(),
+        max_retries: config.max_retries,
+        retry_base_ms: config.retry_base_ms,
+        max_context_chars: config.max_context_chars,
+        parent_session: None,
+    })
+}
+
+fn add_delegation_tools(
+    tools: &mut dsh_core::ToolRegistry,
+    store: &Arc<dyn SessionStore>,
+    provider: &Arc<dyn dsh_core::LlmProvider>,
+    config: &AgentConfig,
+    clock: &Arc<dyn Clock>,
+) -> anyhow::Result<()> {
+    let base = tools.clone();
+    tools.insert(Arc::new(dsh_agent::SubagentTool::new(
+        Arc::clone(store),
+        Arc::clone(provider),
+        base.clone(),
+        config.clone(),
+        Arc::clone(clock),
+    )))?;
+    tools.insert(Arc::new(dsh_agent::WorkflowTool::new(
+        Arc::clone(store),
+        Arc::clone(provider),
+        base,
+        config.clone(),
+        Arc::clone(clock),
+    )))?;
+    Ok(())
+}
+
 fn build_runtime(config: &Config, env: &dyn Env) -> anyhow::Result<Runtime> {
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(SqliteStorePlugin),
@@ -218,6 +225,7 @@ fn build_runtime(config: &Config, env: &dyn Env) -> anyhow::Result<Runtime> {
         Box::new(ToolsPlugin),
         Box::new(dsh_jobs::JobsPlugin),
         Box::new(dsh_mcp::McpPlugin::from_env()),
+        Box::new(dsh_schedule::SchedulePlugin),
     ];
     compose(&plugins, config, env).map_err(|error| anyhow!("{error}"))
 }
@@ -431,9 +439,66 @@ fn sessions(args: SessionsArgs) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+async fn schedules(args: SchedulesArgs) -> anyhow::Result<ExitCode> {
+    let config = config_from_env()?;
+    let file = dsh_schedule::ScheduleFile::new(config.home.join("schedules.json"));
+    match args.command {
+        SchedulesCommand::List => {
+            let schedules = file.list()?;
+            if schedules.is_empty() {
+                println!("no schedules");
+                return Ok(ExitCode::SUCCESS);
+            }
+            for schedule in schedules {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    schedule.id, schedule.next_run_at, schedule.enabled, schedule.task
+                );
+            }
+        }
+        SchedulesCommand::RunDue => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let due = file.due(now)?;
+            if due.is_empty() {
+                println!("no due schedules");
+                return Ok(ExitCode::SUCCESS);
+            }
+            let env = SystemEnv;
+            let runtime = build_runtime(&config, &env)?;
+            let cwd = resolve_cwd(None)?;
+            let agent_config = agent_config(&config, cwd)?;
+            let mut tools = runtime.tools;
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            add_delegation_tools(
+                &mut tools,
+                &runtime.store,
+                &runtime.provider,
+                &agent_config,
+                &clock,
+            )?;
+            let runs = dsh_schedule::run_due(
+                &file,
+                runtime.store,
+                runtime.provider,
+                tools,
+                agent_config,
+                clock,
+            )
+            .await?;
+            for run in runs {
+                print!("{}", schedule_run_text(&run));
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn tools() -> anyhow::Result<ExitCode> {
     let mut registry = dsh_tools::default_registry()?;
     for tool in dsh_jobs::default_jobs() {
+        registry.insert(tool)?;
+    }
+    for tool in dsh_schedule::default_schedule_tools() {
         registry.insert(tool)?;
     }
     for schema in registry.schemas() {
@@ -494,6 +559,20 @@ fn summarize_event(event: &SessionEvent) -> String {
     }
 }
 
+fn schedule_run_text(run: &dsh_schedule::ScheduleRun) -> String {
+    let mut output = format!(
+        "{}\t{}\t{}\n",
+        run.schedule_id,
+        run.session_id,
+        describe_outcome(&run.outcome.outcome)
+    );
+    if !run.outcome.text.is_empty() {
+        output.push_str(&run.outcome.text);
+        output.push('\n');
+    }
+    output
+}
+
 fn describe_outcome(outcome: &TurnOutcome) -> String {
     match outcome {
         TurnOutcome::Completed => "completed".to_string(),
@@ -520,10 +599,107 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dsh_agent::RunOutcome;
     use dsh_core::{
-        AssistantMessage, ContentBlock, MessageId, StepId, TokenUsage, ToolCallId, ToolMessage,
-        TurnId, UserMessage,
+        AssistantMessage, ContentBlock, EventRecord, MessageId, SessionSummary, StepId, StoreError,
+        TokenUsage, ToolCallId, ToolMessage, TurnId, UserMessage,
     };
+
+    struct NoopStore;
+
+    impl SessionStore for NoopStore {
+        fn create(&self, _header: &SessionHeader) -> Result<(), StoreError> {
+            Ok(())
+        }
+        fn append(
+            &self,
+            _session_id: &SessionId,
+            at: i64,
+            event: SessionEvent,
+        ) -> Result<EventRecord, StoreError> {
+            Ok(EventRecord {
+                seq: EventSeq::FIRST,
+                at,
+                event,
+            })
+        }
+        fn load(&self, _session_id: &SessionId) -> Result<Vec<EventRecord>, StoreError> {
+            Ok(Vec::new())
+        }
+        fn list(&self) -> Result<Vec<SessionSummary>, StoreError> {
+            Ok(Vec::new())
+        }
+        fn has(&self, _session_id: &SessionId) -> Result<bool, StoreError> {
+            Ok(false)
+        }
+        fn delete(&self, _session_id: &SessionId) -> Result<bool, StoreError> {
+            Ok(false)
+        }
+    }
+
+    struct NoopProvider;
+
+    #[async_trait::async_trait]
+    impl dsh_core::LlmProvider for NoopProvider {
+        fn name(&self) -> &'static str {
+            "noop"
+        }
+        async fn stream(
+            &self,
+            _request: dsh_core::LlmRequest,
+            _cancel: CancellationToken,
+        ) -> Result<dsh_core::LlmStream, dsh_core::LlmError> {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+    }
+
+    #[test]
+    fn delegation_tools_are_installed_for_every_run_surface() {
+        let mut tools = dsh_tools::default_registry().expect("registry");
+        let store: Arc<dyn SessionStore> = Arc::new(NoopStore);
+        let provider: Arc<dyn dsh_core::LlmProvider> = Arc::new(NoopProvider);
+        let config = AgentConfig::new(
+            ModelId::parse("test-model").expect("model"),
+            PathBuf::from("/work"),
+        );
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        add_delegation_tools(&mut tools, &store, &provider, &config, &clock).expect("delegation");
+        let names = tools.names();
+        assert!(names.iter().any(|name| name == "subagent"));
+        assert!(names.iter().any(|name| name == "workflow"));
+    }
+
+    #[test]
+    fn schedule_run_text_includes_non_empty_answers() {
+        let session_id = SessionId::generate();
+        let run = dsh_schedule::ScheduleRun {
+            schedule_id: "schedule-1".to_string(),
+            session_id: session_id.clone(),
+            outcome: RunOutcome {
+                session_id: session_id.clone(),
+                outcome: TurnOutcome::Completed,
+                text: "done".to_string(),
+                usage: TokenUsage::default(),
+                steps: 1,
+            },
+        };
+        let text = schedule_run_text(&run);
+        assert!(text.contains("done"));
+        assert_eq!(text.lines().count(), 2);
+
+        let empty = dsh_schedule::ScheduleRun {
+            schedule_id: "schedule-2".to_string(),
+            session_id,
+            outcome: RunOutcome {
+                session_id: SessionId::generate(),
+                outcome: TurnOutcome::Completed,
+                text: String::new(),
+                usage: TokenUsage::default(),
+                steps: 1,
+            },
+        };
+        assert_eq!(schedule_run_text(&empty).lines().count(), 1);
+    }
 
     #[test]
     fn truncation_counts_characters_not_bytes() {

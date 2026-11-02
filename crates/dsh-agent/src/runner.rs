@@ -35,6 +35,8 @@ pub struct AgentConfig {
     pub permission: PermissionMode,
     /// Physical session working directory.
     pub cwd: PathBuf,
+    /// Harness state directory for durable non-session files.
+    pub state_dir: PathBuf,
     /// Retryable provider failures retried before the turn fails.
     pub max_retries: u32,
     /// Base delay for exponential retry backoff.
@@ -48,7 +50,7 @@ pub struct AgentConfig {
 impl AgentConfig {
     /// Build a config with the harness defaults.
     #[must_use]
-    pub const fn new(model: ModelId, cwd: PathBuf) -> Self {
+    pub fn new(model: ModelId, cwd: PathBuf) -> Self {
         Self {
             model,
             system_prompt: String::new(),
@@ -57,7 +59,8 @@ impl AgentConfig {
             max_steps: DEFAULT_MAX_STEPS,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             permission: PermissionMode::WorkspaceWrite,
-            cwd,
+            cwd: cwd.clone(),
+            state_dir: cwd,
             max_retries: 2,
             retry_base_ms: 500,
             max_context_chars: 200_000,
@@ -428,6 +431,7 @@ impl AgentLoop {
             }
 
             let context = ToolContext::new(cwd, self.config.permission, cancel.clone())
+                .with_state_dir(self.config.state_dir.clone())
                 .with_session(Arc::clone(&session_handle));
             let results = self.execute_calls(&calls, &context, &cancel, &sink).await;
             for result in results {
@@ -1409,6 +1413,170 @@ mod tests {
                 .iter()
                 .any(|message| message.text() == "child done")
         );
+    }
+
+    #[tokio::test]
+    async fn workflows_run_ordered_child_sessions() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            tool_response(
+                "call-1",
+                "workflow",
+                r#"{"steps":[{"task":"one"},{"task":"two"}]}"#,
+            ),
+            text_response("one"),
+            text_response("two"),
+            text_response("parent done"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut registry = tools();
+        let workflow = Arc::new(crate::WorkflowTool::new(
+            store.clone(),
+            provider.clone(),
+            registry.clone(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        ));
+        registry.insert(workflow).expect("workflow");
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            registry,
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "workflow", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(outcome.is_success());
+        assert_eq!(outcome.text, "parent done");
+        let parent_events = store.load(&session_id).expect("parent events");
+        let tool_result = parent_events
+            .iter()
+            .find_map(|record| match &record.event {
+                SessionEvent::ToolResult { message } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("tool result");
+        assert!(
+            tool_result
+                .text_content()
+                .contains("workflow completed 2/2 steps")
+        );
+        assert!(tool_result.text_content().contains("one"));
+        assert!(tool_result.text_content().contains("two"));
+        let summaries = store.list().expect("list");
+        assert_eq!(summaries.len(), 3);
+        let mut children = summaries
+            .into_iter()
+            .filter(|summary| summary.id != session_id)
+            .collect::<Vec<_>>();
+        children.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        assert_eq!(children.len(), 2);
+        for child in children {
+            assert_eq!(
+                store
+                    .header(&child.id)
+                    .expect("child header")
+                    .parent_session,
+                Some(session_id.clone())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_default_stops_after_a_failed_step() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            tool_response(
+                "call-1",
+                "workflow",
+                r#"{"steps":[{"task":"fail"},{"task":"succeed"}]}"#,
+            ),
+            vec![Ok(StreamEvent::Finish {
+                reason: FinishReason::Stop,
+            })],
+            text_response("two"),
+            text_response("parent done"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut registry = tools();
+        let workflow = Arc::new(crate::WorkflowTool::new(
+            store.clone(),
+            provider.clone(),
+            registry.clone(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        ));
+        registry.insert(workflow).expect("workflow");
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            registry,
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        loop_
+            .run(&session_id, "workflow", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        let parent_events = store.load(&session_id).expect("parent events");
+        let tool_result = parent_events
+            .iter()
+            .find_map(|record| match &record.event {
+                SessionEvent::ToolResult { message } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("tool result");
+        assert!(
+            tool_result
+                .text_content()
+                .contains("workflow completed 0/1 steps")
+        );
+        assert_eq!(store.list().expect("list").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn workflow_validates_step_counts_before_requiring_a_session() {
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let tool = crate::WorkflowTool::new(
+            Arc::new(MockStore::default()),
+            provider,
+            tools(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        );
+        let context = ToolContext::new(
+            PathBuf::from("/work"),
+            PermissionMode::WorkspaceWrite,
+            CancellationToken::new(),
+        );
+        let empty = tool
+            .execute(&context, serde_json::json!({"steps": []}))
+            .await;
+        assert!(empty.is_error);
+        assert!(empty.text_content().contains("between 1 and 20"));
+
+        let too_many: Vec<_> = (0..21)
+            .map(|index| serde_json::json!({"task": format!("step {index}")}))
+            .collect();
+        let outcome = tool
+            .execute(&context, serde_json::json!({"steps": too_many}))
+            .await;
+        assert!(outcome.is_error);
+        assert!(outcome.text_content().contains("between 1 and 20"));
+
+        let twenty: Vec<_> = (0..20)
+            .map(|index| serde_json::json!({"task": format!("step {index}")}))
+            .collect();
+        let outcome = tool
+            .execute(&context, serde_json::json!({"steps": twenty}))
+            .await;
+        assert!(outcome.is_error);
+        assert!(!outcome.text_content().contains("between 1 and 20"));
     }
 
     #[tokio::test]

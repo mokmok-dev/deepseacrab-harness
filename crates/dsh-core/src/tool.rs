@@ -111,6 +111,8 @@ pub trait ToolSession: Send + Sync {
 pub struct ToolContext {
     /// Physical session working directory.
     pub cwd: PathBuf,
+    /// Harness state directory for durable non-session files.
+    pub state_dir: PathBuf,
     /// Effective permission mode.
     pub permission: PermissionMode,
     /// Cancellation propagated to the tool body.
@@ -122,13 +124,21 @@ pub struct ToolContext {
 impl ToolContext {
     /// Build a context for a session.
     #[must_use]
-    pub const fn new(cwd: PathBuf, permission: PermissionMode, cancel: CancellationToken) -> Self {
+    pub fn new(cwd: PathBuf, permission: PermissionMode, cancel: CancellationToken) -> Self {
         Self {
+            state_dir: cwd.clone(),
             cwd,
             permission,
             cancel,
             session: None,
         }
+    }
+
+    /// Set the harness state directory.
+    #[must_use]
+    pub fn with_state_dir(mut self, state_dir: PathBuf) -> Self {
+        self.state_dir = state_dir;
+        self
     }
 
     /// Attach the durable session handle.
@@ -557,6 +567,8 @@ mod tests {
             &session.id
         );
         assert_eq!(context.session().expect("session").now_millis(), 1);
+        let context = context.with_state_dir(PathBuf::from("/state"));
+        assert_eq!(context.state_dir, PathBuf::from("/state"));
         assert_eq!(
             context.session().expect("session").search("query", 1),
             Err(StoreError::Unsupported("session search".to_string()))

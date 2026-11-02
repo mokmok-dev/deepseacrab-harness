@@ -1,5 +1,5 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
-#![allow(clippy::ref_option)]
+#![allow(clippy::ref_option, clippy::format_push_string)]
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
 //! The turn and step driver.
@@ -11,9 +11,11 @@
 pub mod assembler;
 pub mod runner;
 pub mod subagent;
+pub mod workflow;
 
 pub use assembler::AssistantAssembler;
 pub use runner::{
     AgentConfig, AgentError, AgentLoop, EventSink, RunEvent, RunOutcome, plan_batches,
 };
 pub use subagent::SubagentTool;
+pub use workflow::WorkflowTool;

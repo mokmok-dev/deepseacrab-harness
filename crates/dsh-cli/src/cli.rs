@@ -19,6 +19,8 @@ pub enum Command {
     Run(RunArgs),
     /// Inspect durable sessions.
     Sessions(SessionsArgs),
+    /// Inspect or run durable schedules.
+    Schedules(SchedulesArgs),
     /// List registered tools.
     Tools,
     /// Print effective configuration.
@@ -108,6 +110,23 @@ pub enum SessionsCommand {
         /// Exact session identity.
         session_id: String,
     },
+}
+
+/// Schedule inspection and execution commands.
+#[derive(Debug, Args)]
+pub struct SchedulesArgs {
+    /// Schedule operation.
+    #[command(subcommand)]
+    pub command: SchedulesCommand,
+}
+
+/// Schedule operations.
+#[derive(Debug, Subcommand)]
+pub enum SchedulesCommand {
+    /// List stored schedules.
+    List,
+    /// Run every schedule whose next run time has passed.
+    RunDue,
 }
 
 #[cfg(test)]
@@ -218,6 +237,17 @@ mod tests {
             cli.command,
             Command::Web { ref bind } if bind == "127.0.0.1:3080"
         ));
+    }
+
+    #[test]
+    fn parses_schedule_commands() {
+        let cli = Cli::try_parse_from(["dsh", "schedules", "list"]).expect("list");
+        assert!(matches!(cli.command, Command::Schedules(_)));
+        let cli = Cli::try_parse_from(["dsh", "schedules", "run-due"]).expect("run-due");
+        let Command::Schedules(args) = cli.command else {
+            panic!("expected schedules");
+        };
+        assert!(matches!(args.command, SchedulesCommand::RunDue));
     }
 
     #[test]
