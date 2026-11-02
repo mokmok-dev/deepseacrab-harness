@@ -440,6 +440,7 @@ fn text_sink() -> EventSink {
         RunEvent::Session { .. }
         | RunEvent::Status { .. }
         | RunEvent::Text { .. }
+        | RunEvent::ToolCallArgs { .. }
         | RunEvent::Final { .. } => {}
     })
 }
