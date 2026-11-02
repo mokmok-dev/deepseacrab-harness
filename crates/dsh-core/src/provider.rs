@@ -18,6 +18,38 @@ pub const MAX_PROVIDER_NAME_BYTES: usize = 64;
 
 pub(crate) const BUILTIN_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
 
+/// Header that carries a route's credential.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthStyle {
+    /// `x-api-key`, read by Anthropic's Messages API.
+    #[default]
+    XApiKey,
+    /// `Authorization: Bearer`, read by Ollama Cloud and OpenAI-style gateways.
+    Bearer,
+}
+
+impl AuthStyle {
+    /// The spelling accepted in `providers.json` and `dsh providers add --auth`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::XApiKey => "x-api-key",
+            Self::Bearer => "bearer",
+        }
+    }
+
+    /// Parse one of the accepted spellings.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "x-api-key" => Some(Self::XApiKey),
+            "bearer" => Some(Self::Bearer),
+            _ => None,
+        }
+    }
+}
+
 /// Whether `name` can key the credential store and the durable provider id.
 #[must_use]
 pub fn valid_provider_name(name: &str) -> bool {
@@ -39,6 +71,8 @@ pub struct ProviderConfig {
     pub model: String,
     /// Variable holding the key; `None` means the stored secret is the only source.
     pub api_key_env: Option<String>,
+    /// Header that carries the credential.
+    pub auth: AuthStyle,
 }
 
 impl ProviderConfig {
@@ -153,6 +187,7 @@ fn builtin_route() -> ProviderConfig {
         base_url: DEFAULT_BASE_URL.to_string(),
         model: DEFAULT_MODEL.to_string(),
         api_key_env: Some(BUILTIN_API_KEY_ENV.to_string()),
+        auth: AuthStyle::XApiKey,
     }
 }
 
@@ -171,6 +206,8 @@ struct RawProvider {
     base_url: String,
     model: String,
     api_key_env: Option<String>,
+    #[serde(default)]
+    auth: AuthStyle,
 }
 
 /// Parse the `DSH_PROVIDERS` JSON array into validated routes.
@@ -226,6 +263,7 @@ fn validate_entry(
         base_url: raw.base_url,
         model: raw.model,
         api_key_env: raw.api_key_env,
+        auth: raw.auth,
     })
 }
 
@@ -314,6 +352,7 @@ mod tests {
             base_url: DEFAULT_BASE_URL.to_string(),
             model: DEFAULT_MODEL.to_string(),
             api_key_env: Some(BUILTIN_API_KEY_ENV.to_string()),
+            auth: AuthStyle::XApiKey,
         }
     }
 
@@ -323,6 +362,7 @@ mod tests {
             base_url: format!("http://{name}.example"),
             model: format!("{name}-model"),
             api_key_env: None,
+            auth: AuthStyle::XApiKey,
         }
     }
 
@@ -351,8 +391,55 @@ mod tests {
                 base_url: "https://openrouter.ai/api/anthropic".to_string(),
                 model: "anthropic/claude-sonnet-4.5".to_string(),
                 api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+                auth: AuthStyle::XApiKey,
             }]
         );
+    }
+
+    #[test]
+    fn auth_style_defaults_to_x_api_key_and_parses_bearer() {
+        let defaulted = parsed(&[entry("gw", "https://gw.example", "m")]).expect("parsed");
+        assert_eq!(defaulted[0].auth, AuthStyle::XApiKey);
+
+        let bearer = parsed(&[json!({
+            "name": "gw",
+            "base_url": "https://gw.example",
+            "model": "m",
+            "auth": "bearer",
+        })])
+        .expect("parsed");
+        assert_eq!(bearer[0].auth, AuthStyle::Bearer);
+    }
+
+    #[test]
+    fn an_unknown_auth_style_is_rejected() {
+        let error = parsed(&[json!({
+            "name": "gw",
+            "base_url": "https://gw.example",
+            "model": "m",
+            "auth": "basic",
+        })])
+        .expect_err("unknown auth");
+        assert!(
+            matches!(
+                error,
+                ProviderError::Entry {
+                    index: 0,
+                    reason: EntryError::Shape(_),
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("unknown variant"), "{error}");
+    }
+
+    #[test]
+    fn auth_style_spellings_round_trip() {
+        for style in [AuthStyle::XApiKey, AuthStyle::Bearer] {
+            assert_eq!(AuthStyle::parse(style.as_str()), Some(style));
+        }
+        assert_eq!(AuthStyle::parse("Bearer"), None);
+        assert_eq!(AuthStyle::parse("bearer "), None);
     }
 
     #[test]

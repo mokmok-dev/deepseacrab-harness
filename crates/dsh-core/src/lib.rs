@@ -42,8 +42,8 @@ pub use plugin::{
     SystemClock, compose,
 };
 pub use provider::{
-    DEFAULT_PROVIDER, EntryError, MAX_PROVIDER_NAME_BYTES, ProviderConfig, ProviderError,
-    ProviderTable, parse_providers, valid_provider_name,
+    AuthStyle, DEFAULT_PROVIDER, EntryError, MAX_PROVIDER_NAME_BYTES, ProviderConfig,
+    ProviderError, ProviderTable, parse_providers, valid_provider_name,
 };
 pub use sandbox::{NoSandbox, Sandbox, SandboxCommand, SandboxMode};
 pub use session::{SESSION_FORMAT_VERSION, SessionHeader, SessionSearchHit, SessionSummary};

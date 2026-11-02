@@ -133,8 +133,9 @@ The policy is lexical. It does not resolve symlinks, so a symlink inside the wor
 
 ## Model adapter
 
-`dsh-llm` speaks the Messages API, which is the dialect the built-in `deepseek` route and any route declared in `DSH_PROVIDERS` must serve. A route supplies its own name, base URL, model, and credential, so the adapter is not tied to one vendor:
+`dsh-llm` speaks the Messages API, which is the dialect the built-in `deepseek` route and any route declared in `DSH_PROVIDERS` must serve. A route supplies its own name, base URL, model, credential, and auth header style, so the adapter is not tied to one vendor:
 
+- The credential travels as `x-api-key` by default, or as `Authorization: Bearer` when the route sets `auth` to `bearer`. Ollama Cloud reads only the latter.
 - System text is the top-level `system` field.
 - User text, assistant text/reasoning/tool calls, and tool results map to Messages content blocks.
 - Adjacent same-role turns merge.

@@ -15,7 +15,9 @@ pub mod sse;
 pub mod wire;
 
 use bytes::Bytes;
-use dsh_core::{LlmError, LlmErrorCode, LlmProvider, LlmRequest, LlmStream, StreamEvent};
+use dsh_core::{
+    AuthStyle, LlmError, LlmErrorCode, LlmProvider, LlmRequest, LlmStream, StreamEvent,
+};
 use futures_util::{Stream, StreamExt};
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -36,8 +38,10 @@ pub struct MessagesConfig {
     pub name: String,
     /// Messages API base URL, with or without a trailing `/v1`.
     pub base_url: String,
-    /// Credential sent as `x-api-key`.
+    /// Credential sent in the header named by `auth`.
     pub api_key: String,
+    /// Header that carries the credential.
+    pub auth: AuthStyle,
     /// Whole-request timeout.
     pub timeout: Duration,
 }
@@ -105,11 +109,16 @@ impl LlmProvider for MessagesProvider {
         let builder = self
             .client
             .post(self.endpoint())
-            .header("x-api-key", self.config.api_key.as_str())
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .json(&body);
+            .header("accept", "text/event-stream");
+        let builder = match self.config.auth {
+            AuthStyle::XApiKey => builder.header("x-api-key", self.config.api_key.as_str()),
+            AuthStyle::Bearer => {
+                builder.header("authorization", format!("Bearer {}", self.config.api_key))
+            }
+        };
+        let builder = builder.json(&body);
         let response = tokio::select! {
             () = cancel.cancelled() => return Err(cancelled()),
             result = builder.send() => result.map_err(|error| LlmError::transport(error.to_string()))?,
@@ -239,6 +248,7 @@ mod tests {
             name: "deepseek".to_string(),
             base_url: "https://api.deepseek.com/anthropic".to_string(),
             api_key: "secret".to_string(),
+            auth: AuthStyle::XApiKey,
             timeout: Duration::from_secs(30),
         }
     }
@@ -521,6 +531,30 @@ mod tests {
             serde_json::json!({"type": "text", "text": "hello"})
         );
         assert!(payload["messages"][0]["content"][0].get("text").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_bearer_route_authorizes_without_the_anthropic_header() {
+        let (base, server) = serve(sse_response(STREAM)).await;
+        let provider = MessagesProvider::new(MessagesConfig {
+            base_url: base,
+            auth: AuthStyle::Bearer,
+            ..config()
+        })
+        .expect("provider");
+        let stream = provider
+            .stream(request(), CancellationToken::new())
+            .await
+            .expect("stream");
+        collect(stream).await;
+
+        let captured = server.await.expect("server");
+        let headers = captured.headers.to_lowercase();
+        assert!(
+            headers.contains("authorization: bearer secret"),
+            "{headers}"
+        );
+        assert!(!headers.contains("x-api-key"), "{headers}");
     }
 
     #[tokio::test]

@@ -186,6 +186,14 @@ pub enum ProvidersCommand {
         /// Variable holding the key; omit to use a stored credential.
         #[arg(long)]
         api_key_env: Option<String>,
+        /// Header carrying the credential: `x-api-key` or `bearer`.
+        #[arg(
+            long,
+            value_name = "STYLE",
+            default_value = "x-api-key",
+            value_parser = ["x-api-key", "bearer"]
+        )]
+        auth: String,
     },
     /// Remove a provider route.
     Remove {
@@ -374,10 +382,12 @@ mod tests {
                 ref base_url,
                 ref model,
                 api_key_env: Some(ref var),
+                ref auth,
             } if name == "local-gw"
                 && base_url == "http://127.0.0.1:1234"
                 && model == "qwen3-coder"
                 && var == "LOCAL_GW_KEY"
+                && auth == "x-api-key"
         ));
 
         let cli = Cli::try_parse_from([
@@ -398,9 +408,47 @@ mod tests {
             args.command,
             ProvidersCommand::Add {
                 api_key_env: None,
+                ref auth,
                 ..
-            }
+            } if auth == "x-api-key"
         ));
+
+        let cli = Cli::try_parse_from([
+            "dsh",
+            "providers",
+            "add",
+            "ollama-cloud",
+            "--base-url",
+            "https://ollama.com/v1",
+            "--model",
+            "deepseek-v4.1-flash:1017",
+            "--auth",
+            "bearer",
+        ])
+        .expect("add with bearer auth");
+        let Command::Providers(args) = cli.command else {
+            panic!("expected providers");
+        };
+        assert!(matches!(
+            args.command,
+            ProvidersCommand::Add { ref auth, .. } if auth == "bearer"
+        ));
+
+        assert!(
+            Cli::try_parse_from([
+                "dsh",
+                "providers",
+                "add",
+                "bad",
+                "--base-url",
+                "https://bad.example",
+                "--model",
+                "m",
+                "--auth",
+                "basic",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

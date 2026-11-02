@@ -132,6 +132,7 @@ fn route_value(route: &ProviderConfig) -> serde_json::Value {
         "base_url": route.base_url.as_str(),
         "model": route.model.as_str(),
         "api_key_env": route.api_key_env.as_deref(),
+        "auth": route.auth.as_str(),
     })
 }
 
@@ -144,6 +145,7 @@ fn temporary_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dsh_core::AuthStyle;
 
     fn file(directory: &tempfile::TempDir) -> ProviderFile {
         ProviderFile::new(directory.path().join("providers.json"))
@@ -155,6 +157,7 @@ mod tests {
             base_url: format!("http://{name}.example"),
             model: format!("{name}-model"),
             api_key_env: None,
+            auth: AuthStyle::XApiKey,
         }
     }
 
@@ -164,6 +167,7 @@ mod tests {
         let file = file(&directory);
         let mut with_variable = route("env-gw");
         with_variable.api_key_env = Some("ENV_GW_KEY".to_string());
+        with_variable.auth = AuthStyle::Bearer;
         let routes = vec![route("local-gw"), with_variable];
         file.save(&routes).expect("save");
         assert_eq!(file.load().expect("load"), routes);
