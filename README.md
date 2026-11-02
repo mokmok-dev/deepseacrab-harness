@@ -186,15 +186,13 @@ Tool panics are contained and returned as tool errors, so the matching tool resu
 ## Testing
 
 ```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- --deny warnings
-cargo fmt --all -- --check
-./scripts/mutants.sh
+nix flake check
+nix run .#mutants
 ```
 
 Property tests cover session event round-trips, message projection, SSE chunk boundaries, retry policy invariants, tool path policy, edit semantics, and event batch planning. There is no example-based test suite.
 
-`scripts/mutants.sh` runs `cargo-mutants` inside a transient systemd user scope when `systemd-run` is available, with `MemoryMax=80%` and `MemoryHigh=70%`. It falls back to plain `cargo mutants` otherwise.
+`nix run .#mutants` builds the `mutants` app and runs `cargo-mutants` with the flake's toolchain and linker settings. When the systemd user manager is reachable, it runs inside a transient scope with `MemoryMax=80%` and `MemoryHigh=70%`. Otherwise it runs directly. Set `JOBS` and `TIMEOUT` to override the default 4 jobs and 300 second timeout.
 
 ## What is out of scope
 

@@ -15,4 +15,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
-      - run: nix develop --command cargo mutants --workspace --jobs 4 --timeout 300 --baseline run
+      - run: nix run .#mutants
