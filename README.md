@@ -10,10 +10,10 @@ The headless product works end to end. A task can be submitted from the CLI, the
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 820 tests passed.
+- `cargo test --workspace`: 839 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The eighteen crates produced 1006 caught viable mutants and 344 unviable mutants.
+- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The eighteen crates produced 1031 caught viable mutants and 347 unviable mutants.
 - `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
 
 ## Quick start
@@ -23,7 +23,17 @@ export DEEPSEEK_API_KEY=...
 cargo run -p dsh-cli --bin dsh -- run "read Cargo.toml and summarize the workspace"
 ```
 
-Use any Messages-compatible endpoint by declaring a route. No `DEEPSEEK_*` variable is read for a route that is not the built-in `deepseek` one:
+Use any Messages-compatible endpoint by adding a durable route. Routes live in `$DSH_HOME/providers.json`, and the route name keys the credential store:
+
+```sh
+cargo run -p dsh-cli --bin dsh -- providers add local-gw --base-url http://127.0.0.1:1234 --model qwen3-coder
+cargo run -p dsh-cli --bin dsh -- auth set local-gw
+cargo run -p dsh-cli --bin dsh -- run "say hello"
+```
+
+No `DEEPSEEK_*` variable is read for a route that is not the built-in `deepseek` one. `--api-key-env LOCAL_GW_KEY` names a variable instead of a stored secret, and is optional.
+
+The `DSH_PROVIDERS` environment variable overrides the file when it is set:
 
 ```sh
 export DSH_PROVIDERS='[{"name":"local-gw","base_url":"http://127.0.0.1:1234","model":"qwen3-coder","api_key_env":"LOCAL_GW_KEY"}]'
@@ -31,9 +41,7 @@ export LOCAL_GW_KEY=...
 cargo run -p dsh-cli --bin dsh -- run "say hello"
 ```
 
-Store the key once instead of exporting it by omitting `api_key_env` and running `dsh auth set local-gw`.
-
-When several routes are declared and none is selected, `dsh run` fails with `no provider selected`. Inspection commands such as `dsh sessions`, `dsh auth`, `dsh telemetry`, `dsh schedules list`, and `dsh tools` still work, because they do not need a model route. `dsh config` prints the whole table and reports `"provider": null` with `"provider_error"` until a route is selected.
+When several routes are declared and none is selected, `dsh run` fails with `no provider selected`. Inspection commands such as `dsh sessions`, `dsh auth`, `dsh providers list`, `dsh telemetry`, `dsh schedules list`, and `dsh tools` still work, because they do not need a model route. `dsh config` prints the whole table and reports `"provider": null` with `"provider_error"` until a route is selected.
 
 Pipe a task when it is long:
 
@@ -91,6 +99,9 @@ cargo run -p dsh-cli --bin dsh -- sdk
 | `dsh auth set <provider>` | Store a provider secret read from stdin. |
 | `dsh auth list` | List providers with stored secrets. |
 | `dsh auth remove <provider>` | Remove a stored provider secret. |
+| `dsh providers list` | List durable provider routes. |
+| `dsh providers add <name> --base-url <url> --model <id> [--api-key-env <var>]` | Store or replace one route in `$DSH_HOME/providers.json`. |
+| `dsh providers remove <name>` | Remove one durable provider route. |
 | `dsh telemetry` | Print local run counters. |
 | `dsh tools` | List the model-facing tool registry. |
 | `dsh config` | Print effective configuration and the provider table without secrets. |
@@ -100,6 +111,8 @@ cargo run -p dsh-cli --bin dsh -- sdk
 Exit code `0` means the turn completed. `1` means the turn failed, was cancelled, or hit its step limit. Clap usage errors exit `2`.
 
 ## Configuration
+
+Provider routes written by `dsh providers` live in `$DSH_HOME/providers.json`. When `DSH_PROVIDERS` is set, it replaces the file for that process.
 
 | Variable | Default | Meaning |
 |---|---|---|

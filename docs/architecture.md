@@ -38,7 +38,7 @@ No adapter crate depends on another adapter. The agent depends only on the trait
 - `EventRecord` pairs a fact with its sequence and wall-clock time.
 - `ToolSchema` is the model-facing declaration; `ToolOutcome` is the normalized result.
 - `LlmRequest` and `StreamEvent` are provider-neutral. A provider translates its wire format at the edge.
-- `ProviderTable` pairs the built-in `deepseek` route with the routes declared in `DSH_PROVIDERS` and marks the active one. Only the table constructor can create it, so every route is validated once, at the configuration boundary. When a route is selected, the active route is one of the entries. A table with several routes and no selection has no active route: commands that need a model route require one, while inspection commands do not.
+- `ProviderTable` pairs the built-in `deepseek` route with the configured routes and marks the active one. Configuration comes from `DSH_PROVIDERS` when it is set, otherwise from `$DSH_HOME/providers.json`. Only the table constructor can create it, so every route is validated once, at the configuration boundary. When a route is selected, the active route is one of the entries. A table with several routes and no selection has no active route: commands that need a model route require one, while inspection commands do not.
 
 `derive_messages` projects the event log into model history. Lifecycle markers disappear; message facts keep their order. The projection is the only way the loop builds a request, so a resume reads exactly the history the model saw.
 
@@ -156,6 +156,12 @@ The adapter rejects cancellation by returning a transport error, which the loop 
 - Session inspection reads the same store the agent writes.
 - `config` prints the active route, the full provider table, and only a boolean per credential. When no route is selected it prints `null` for the route fields and reports the `Unselected` error under `provider_error`.
 - `--provider` and `--model` are parse inputs, so an unknown route is rejected by the same boundary that validates `DSH_PROVIDERS` instead of mutating a validated configuration afterwards.
+
+Provider routes come from three places, in precedence order. The `DSH_PROVIDERS` environment variable wins, then `$DSH_HOME/providers.json`, then the built-in `deepseek` route. The built-in route is always present, and the file cannot replace its name.
+
+`dsh providers add` and `dsh providers remove` rewrite the file through a sibling temporary file and a rename. A rejected route leaves the previous routes in place. The whole file is validated with the same `parse_providers` as the environment, so an add the table would reject fails before anything is written.
+
+The CLI reads the file only for commands that need a model route. `dsh sessions`, `dsh auth`, `dsh telemetry`, and the schedule-file lookup in `dsh schedules` read the environment alone, so a malformed provider file cannot block inspection. `dsh schedules run-due` parses the provider file only after it finds a due schedule.
 
 Configuration parsing is pure through `Config::from_lookup_with`; the process environment is read only in the CLI boundary adapter. This keeps tests independent of process state.
 
