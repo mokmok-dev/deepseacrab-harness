@@ -211,6 +211,13 @@ fn add_delegation_tools(
     tools.insert(Arc::new(dsh_agent::WorkflowTool::new(
         Arc::clone(store),
         Arc::clone(provider),
+        base.clone(),
+        config.clone(),
+        Arc::clone(clock),
+    )))?;
+    tools.insert(Arc::new(dsh_agent::RalphTool::new(
+        Arc::clone(store),
+        Arc::clone(provider),
         base,
         config.clone(),
         Arc::clone(clock),
@@ -224,8 +231,9 @@ fn build_runtime(config: &Config, env: &dyn Env) -> anyhow::Result<Runtime> {
         Box::new(DeepSeekPlugin),
         Box::new(ToolsPlugin),
         Box::new(dsh_jobs::JobsPlugin),
-        Box::new(dsh_mcp::McpPlugin::from_env()),
         Box::new(dsh_schedule::SchedulePlugin),
+        Box::new(dsh_terminal::TerminalPlugin),
+        Box::new(dsh_mcp::McpPlugin::from_env()),
     ];
     compose(&plugins, config, env).map_err(|error| anyhow!("{error}"))
 }
@@ -501,6 +509,9 @@ fn tools() -> anyhow::Result<ExitCode> {
     for tool in dsh_schedule::default_schedule_tools() {
         registry.insert(tool)?;
     }
+    for tool in dsh_terminal::default_terminal_tools() {
+        registry.insert(tool)?;
+    }
     for schema in registry.schemas() {
         println!("{}\t{}", schema.name, schema.description);
     }
@@ -667,6 +678,7 @@ mod tests {
         let names = tools.names();
         assert!(names.iter().any(|name| name == "subagent"));
         assert!(names.iter().any(|name| name == "workflow"));
+        assert!(names.iter().any(|name| name == "ralph"));
     }
 
     #[test]

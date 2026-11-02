@@ -9,11 +9,13 @@
 //! to the session log before the next step derives its request from it.
 
 pub mod assembler;
+pub mod ralph;
 pub mod runner;
 pub mod subagent;
 pub mod workflow;
 
 pub use assembler::AssistantAssembler;
+pub use ralph::RalphTool;
 pub use runner::{
     AgentConfig, AgentError, AgentLoop, EventSink, RunEvent, RunOutcome, plan_batches,
 };

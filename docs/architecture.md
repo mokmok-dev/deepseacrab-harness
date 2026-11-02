@@ -14,6 +14,7 @@ dsh-cli
   ├── dsh-tools    -> dsh-core
   ├── dsh-jobs     -> dsh-core
   ├── dsh-schedule -> dsh-core, dsh-agent
+  ├── dsh-terminal -> dsh-core
   ├── dsh-mcp      -> dsh-core
   ├── dsh-web      -> dsh-agent, dsh-core
   └── dsh-sdk      -> dsh-agent, dsh-core
@@ -89,11 +90,15 @@ Compaction runs before each step. When estimated history characters exceed `max_
 
 The seven built-ins are `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, and `web_fetch`.
 
-The full first-party surface adds `str_replace_editor`, `glob`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, the four `job_*` tools, and the three `schedule_*` tools. Session-owned tools append their facts through `ToolContext::session`. The loop reads the latest `working_directory_changed` fact before each step, so a directory change applies to later steps without mutating the current batch.
+The full first-party surface adds `str_replace_editor`, `glob`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, `ralph`, the four `job_*` tools, the three `schedule_*` tools, and the four `terminal_*` tools. Session-owned tools append their facts through `ToolContext::session`. The loop reads the latest `working_directory_changed` fact before each step, so a directory change applies to later steps without mutating the current batch.
 
 `subagent` builds a child `AgentLoop` from the same store, provider, and tool registry, removes itself and `workflow` from the child registry, records the parent session on the child header, and returns the child's final text. `workflow` runs an ordered list of child sessions, stops after a failed step by default, and reports one line per settled step. A child cannot spawn another child through the same tools.
 
 `dsh-schedule` stores schedules in `state_dir/schedules.json` with an atomic temp-file rename. `schedule_create`, `schedule_list`, and `schedule_cancel` operate on that file through `ToolContext.state_dir`. `dsh schedules run-due` loads the file, runs each enabled entry whose `next_run_at` has passed in its recorded session and cwd, advances the interval, and saves after every turn. A failed turn is a recorded run, not a scheduler failure.
+
+`ralph` runs bounded fresh child sessions toward one objective. Each round receives the immutable objective and the previous handoff, and returns the next handoff. The child registry removes `subagent`, `workflow`, and `ralph`, so a round cannot re-enter the loop.
+
+`dsh-terminal` keeps a process-local registry of PTY sessions. Each session owns a child, a writer, and a bounded output log shared with a reader thread. `terminal_read` returns unread bytes and advances a per-terminal cursor; the 1 MiB cap drops the oldest bytes and slides that cursor. The tools refuse to open a terminal in read-only mode. Terminals do not outlive the harness process.
 
 `job_*` writes a small job directory under the session workspace. `job_start` redirects the child's streams to files, records the pid, and a waiter thread publishes an atomic status file. `job_list`, `job_output`, and `job_kill` read that durable state.
 
@@ -149,4 +154,4 @@ Unit tests sit beside the code they exercise. Integration tests in `dsh-cli/test
 
 Property tests cover the shapes where examples are weak: event round-trips, projection order, SSE chunk splitting, retry delays, path normalization, edit semantics, and batch plans.
 
-`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across eleven crates, with 674 caught and 229 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.
+`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across twelve crates, with 717 caught and 252 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.

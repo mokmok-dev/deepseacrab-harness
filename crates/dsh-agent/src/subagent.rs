@@ -92,6 +92,8 @@ impl Tool for SubagentTool {
         );
         let mut tools = self.tools.clone();
         tools.remove("subagent");
+        tools.remove("workflow");
+        tools.remove("ralph");
         let agent = match AgentLoop::new(
             Arc::clone(&self.store),
             Arc::clone(&self.provider),

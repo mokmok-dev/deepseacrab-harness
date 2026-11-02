@@ -1580,6 +1580,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ralph_runs_fresh_child_rounds() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            tool_response("call-1", "ralph", r#"{"objective":"ship","rounds":2}"#),
+            text_response("one"),
+            text_response("two"),
+            text_response("parent done"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut registry = tools();
+        let ralph = Arc::new(crate::RalphTool::new(
+            store.clone(),
+            provider.clone(),
+            registry.clone(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        ));
+        registry.insert(ralph).expect("ralph");
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            registry,
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        loop_
+            .run(&session_id, "ralph", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        let parent_events = store.load(&session_id).expect("parent events");
+        let tool_result = parent_events
+            .iter()
+            .find_map(|record| match &record.event {
+                SessionEvent::ToolResult { message } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("tool result");
+        assert!(
+            tool_result
+                .text_content()
+                .contains("ralph completed 2/2 rounds")
+        );
+        assert!(tool_result.text_content().contains("one"));
+        assert!(tool_result.text_content().contains("two"));
+        assert_eq!(store.list().expect("list").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn ralph_validates_its_objective_and_round_count() {
+        let tool = crate::RalphTool::new(
+            Arc::new(MockStore::default()),
+            Arc::new(ScriptedProvider::new(Vec::new())),
+            tools(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        );
+        let context = ToolContext::new(
+            PathBuf::from("/work"),
+            PermissionMode::WorkspaceWrite,
+            CancellationToken::new(),
+        );
+        for arguments in [
+            serde_json::json!({"objective": " "}),
+            serde_json::json!({"objective": "ship", "rounds": 0}),
+            serde_json::json!({"objective": "ship", "rounds": 11}),
+        ] {
+            let outcome = tool.execute(&context, arguments).await;
+            assert!(outcome.is_error);
+            assert!(
+                outcome.text_content().contains("must not be empty")
+                    || outcome.text_content().contains("between 1 and 10")
+            );
+        }
+        let ten = tool
+            .execute(
+                &context,
+                serde_json::json!({"objective": "ship", "rounds": 10}),
+            )
+            .await;
+        assert!(ten.is_error);
+        assert!(!ten.text_content().contains("between 1 and 10"));
+    }
+
+    #[tokio::test]
     async fn subagents_require_a_session() {
         let provider = Arc::new(ScriptedProvider::new(Vec::new()));
         let store = Arc::new(MockStore::default());
