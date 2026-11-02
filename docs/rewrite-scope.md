@@ -6,7 +6,7 @@ This document records what the Rust rewrite covers, what it deliberately leaves 
 
 The pass is complete when all of the following hold:
 
-- A task can run from the CLI against the DeepSeek Messages API and print the final answer.
+- A task can run from the CLI against a Messages-compatible provider and print the final answer. The built-in `deepseek` route needs no new configuration; any other route is declared in `DSH_PROVIDERS` and selected by name.
 - The turn is durable: user input, assistant output, tool calls, tool results, and the terminal outcome survive a process exit.
 - A stored session can be resumed and inspected.
 - Tools are model-facing, permission-checked, and always settle a result.
@@ -86,6 +86,8 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 
 **Messages API, not OpenAI chat completions.** The upstream DeepSeek adapter speaks the Anthropic Messages subset at `/anthropic/v1/messages`. The rewrite follows that wire format: top-level system, content blocks, `tool_use`/`tool_result`, thinking blocks, and SSE. This keeps the adapter faithful and makes a later file/image slice a matter of extending the block vocabulary.
 
+**The Messages dialect is the route contract.** A route declared in `DSH_PROVIDERS` supplies a name, a base URL, a model, and an optional credential variable, and that is all. The adapter is therefore a Messages adapter, not a DeepSeek adapter, but a provider that speaks only OpenAI chat completions is not usable this pass. The construction site in `ProviderPlugin` is the seam for a `dialect` field when a second wire format is wanted; nothing else in the design assumes one vendor.
+
 **No automatic retry in the loop.** The retry policy is implemented and tested, but the agent does not yet replay a failed stream. A failed turn is recorded with its machine code. Automatic retry needs request-freeze evidence and a duplicate-effect policy that this pass does not have.
 
 **Lexical path policy.** The workspace boundary is enforced after lexical normalization. It does not resolve symlinks. A symlink inside the workspace can point outside it. This is a known hardening gap, not an accident. The safe next step is to canonicalize the workspace root once at session creation and canonicalize the existing parent of every write target before the boundary check.
@@ -118,6 +120,8 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | 2026-11-02 | Team state is one JSON file plus in-process tasks | The roster and tasks must survive a restart; live joins must not. One locked state and one atomic file keep the seven tools consistent without a second database. |
 | 2026-11-02 | Git tools wrap the real `git` executable | A patch applier and worktree manager are security-sensitive and already maintained. The tools validate refs and paths at the boundary, then delegate to `git` rather than reimplementing object storage. |
 | 2026-11-02 | Credentials live in one `0600` JSON file | The environment stays the first source, and the stored file is the fallback for a user who does not want a key in every shell. The temp-file rename keeps a partially written secret unreadable. |
+| 2026-11-02 | Providers are a validated table, not flat settings | One route described by flat keys cannot answer "which endpoint and which key" once a second route exists. `Config` holds a `ProviderTable` keyed by name, built only at the configuration boundary, so every route is validated once and `dsh config` can print every route. The active route is one of the entries when a route is selected; commands that need a model route require one, and inspection commands do not. `--provider` and `DSH_PROVIDER` are parse inputs; an unknown name fails at the same boundary as a malformed table rather than mutating a validated `Config`. |
+| 2026-11-02 | A route's credential is addressed by route name | The key comes from the variable the route names, then from the credential store under the route's own name. A custom route therefore never reads `DEEPSEEK_API_KEY` or the stored `deepseek` secret. The name charset is defined once in `dsh-core` and delegated to by the store, so any accepted route name is also a valid `dsh auth` key. |
 | 2026-11-02 | SSH runs the command as one argv element after `--` | The remote command never passes through a local shell. Host validation and BatchMode happen at the tool boundary, and the child is bounded by a timeout and a 64 KiB stream cap. |
 | 2026-11-02 | Telemetry is a local counter file, not a network service | The harness reports its own run outcomes through `dsh telemetry`. A network sink needs consent, identity, and a retention policy that this pass does not have. |
 | 2026-11-02 | Jobs use a durable directory, not in-memory handles | A job must survive the process that started it. Pid, output, and status files make listing and output reads independent of the agent. |

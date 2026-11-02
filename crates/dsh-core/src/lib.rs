@@ -15,12 +15,13 @@ pub mod llm;
 pub mod message;
 pub mod permission;
 pub mod plugin;
+pub mod provider;
 pub mod sandbox;
 pub mod session;
 pub mod store;
 pub mod tool;
 
-pub use config::{Config, ConfigError, Env, SystemEnv};
+pub use config::{Config, ConfigError, ConfigOverrides, Env, SystemEnv, default_home};
 pub use event::{
     EventRecord, GoalPhase, SessionEvent, TodoItem, TodoStatus, TurnOutcome, derive_messages,
 };
@@ -39,6 +40,10 @@ pub use permission::{PathError, ensure_within, normalize_lexical, resolve_path};
 pub use plugin::{
     Clock, ComposeError, Effect, FixedClock, Plugin, PluginContext, PluginError, Registry, Runtime,
     SystemClock, compose,
+};
+pub use provider::{
+    DEFAULT_PROVIDER, EntryError, MAX_PROVIDER_NAME_BYTES, ProviderConfig, ProviderError,
+    ProviderTable, parse_providers, valid_provider_name,
 };
 pub use sandbox::{NoSandbox, Sandbox, SandboxCommand, SandboxMode};
 pub use session::{SESSION_FORMAT_VERSION, SessionHeader, SessionSearchHit, SessionSummary};
