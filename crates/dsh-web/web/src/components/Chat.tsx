@@ -86,7 +86,12 @@ export function Chat({
           Sessions
         </button>
         <div className="topbar-title">
-          <span className="topbar-name">DeepSeaCrab Harness</span>
+          <span className="topbar-name">
+            <span className="brand-mark" aria-hidden="true">
+              🦀
+            </span>
+            DeepSeaCrab Harness
+          </span>
           <span className="topbar-session" title={sessionId}>
             {shortSessionId(sessionId)}
           </span>
@@ -115,6 +120,9 @@ export function Chat({
       >
         {empty ? (
           <div className="empty">
+            <div className="empty-mark" aria-hidden="true">
+              🦀
+            </div>
             <h1>What should the harness do?</h1>
             <p>Each session runs in the workspace served by this process.</p>
             <div className="examples">

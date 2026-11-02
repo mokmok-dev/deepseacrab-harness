@@ -82,8 +82,17 @@ button {
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   font-weight: 650;
   letter-spacing: -0.01em;
+}
+
+.brand-mark {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 1.15rem;
+  line-height: 1;
 }
 
 .icon-button {
@@ -232,6 +241,9 @@ button {
 }
 
 .topbar-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   font-weight: 650;
 }
 
@@ -579,6 +591,12 @@ pre {
   width: min(36rem, 100%);
   margin: auto;
   padding: 2rem 0;
+}
+
+.empty-mark {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 2.4rem;
+  line-height: 1;
 }
 
 .empty h1 {
