@@ -21,7 +21,7 @@ pub mod session;
 pub mod store;
 pub mod tool;
 
-pub use config::{Config, ConfigError, ConfigOverrides, Env, SystemEnv};
+pub use config::{Config, ConfigError, ConfigOverrides, Env, SystemEnv, default_home};
 pub use event::{
     EventRecord, GoalPhase, SessionEvent, TodoItem, TodoStatus, TurnOutcome, derive_messages,
 };

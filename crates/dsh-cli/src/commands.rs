@@ -1,16 +1,17 @@
 //! Command implementations.
 
 use crate::cli::{
-    AuthArgs, AuthCommand, Cli, Command, RunArgs, SchedulesArgs, SchedulesCommand, SessionsArgs,
-    SessionsCommand,
+    AuthArgs, AuthCommand, Cli, Command, ProvidersArgs, ProvidersCommand, RunArgs, SchedulesArgs,
+    SchedulesCommand, SessionsArgs, SessionsCommand,
 };
+use crate::providers::{ProviderFile, default_path};
 use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use dsh_agent::{AgentConfig, AgentLoop, EventSink, RunEvent};
 use dsh_core::{
     Clock, Config, ConfigOverrides, Env, EventSeq, ModelId, PermissionMode, Plugin, PluginContext,
-    PluginError, ProviderConfig, Runtime, SessionEvent, SessionHeader, SessionId, SessionStore,
-    SystemClock, SystemEnv, TurnOutcome, compose,
+    PluginError, ProviderConfig, ProviderError, Runtime, SessionEvent, SessionHeader, SessionId,
+    SessionStore, SystemClock, SystemEnv, TurnOutcome, compose, parse_providers,
 };
 use dsh_llm::{MessagesConfig, MessagesProvider};
 use dsh_session::SqliteSessionStore;
@@ -32,6 +33,7 @@ pub async fn run() -> anyhow::Result<ExitCode> {
         Command::Sessions(args) => sessions(args),
         Command::Schedules(args) => schedules(args).await,
         Command::Auth(args) => auth(args).await,
+        Command::Providers(args) => providers(args),
         Command::Telemetry => telemetry(),
         Command::Tools => tools(),
         Command::Config => show_config(),
@@ -122,13 +124,25 @@ async fn run_task(args: RunArgs) -> anyhow::Result<ExitCode> {
     }
 }
 
-fn config_from_env() -> anyhow::Result<Config> {
+fn config_from_env_base() -> anyhow::Result<Config> {
     Ok(Config::from_lookup(|key| std::env::var(key).ok())?)
 }
 
+fn config_from_env() -> anyhow::Result<Config> {
+    config_from_env_with(&ConfigOverrides::default())
+}
+
 fn config_from_env_with(overrides: &ConfigOverrides) -> anyhow::Result<Config> {
+    let env = SystemEnv;
+    let from_file = match env.var("DSH_PROVIDERS") {
+        Some(_) => None,
+        None => ProviderFile::new(default_path()).load_json()?,
+    };
     Ok(Config::from_lookup_with(
-        |key| std::env::var(key).ok(),
+        |key| match key {
+            "DSH_PROVIDERS" => from_file.clone().or_else(|| env.var(key)),
+            _ => env.var(key),
+        },
         overrides,
     )?)
 }
@@ -429,7 +443,7 @@ fn text_sink() -> EventSink {
 }
 
 fn sessions(args: SessionsArgs) -> anyhow::Result<ExitCode> {
-    let config = config_from_env()?;
+    let config = config_from_env_base()?;
     let store = SqliteSessionStore::open(config.database_path())?;
     match args.command {
         SessionsCommand::List => {
@@ -517,8 +531,8 @@ fn sessions(args: SessionsArgs) -> anyhow::Result<ExitCode> {
 }
 
 async fn schedules(args: SchedulesArgs) -> anyhow::Result<ExitCode> {
-    let config = config_from_env()?;
-    let file = dsh_schedule::ScheduleFile::new(config.home.join("schedules.json"));
+    let home = config_from_env_base()?.home;
+    let file = dsh_schedule::ScheduleFile::new(home.join("schedules.json"));
     match args.command {
         SchedulesCommand::List => {
             let schedules = file.list()?;
@@ -540,6 +554,7 @@ async fn schedules(args: SchedulesArgs) -> anyhow::Result<ExitCode> {
                 println!("no due schedules");
                 return Ok(ExitCode::SUCCESS);
             }
+            let config = config_from_env()?;
             config.active_provider()?;
             let env = SystemEnv;
             let runtime = build_runtime(&config, &env)?;
@@ -572,7 +587,7 @@ async fn schedules(args: SchedulesArgs) -> anyhow::Result<ExitCode> {
 }
 
 async fn auth(args: AuthArgs) -> anyhow::Result<ExitCode> {
-    let config = config_from_env()?;
+    let config = config_from_env_base()?;
     let store = dsh_credentials::CredentialStore::new(config.home.join("credentials.json"));
     match args.command {
         AuthCommand::Set { provider } => {
@@ -604,8 +619,68 @@ async fn auth(args: AuthArgs) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn providers(args: ProvidersArgs) -> anyhow::Result<ExitCode> {
+    let file = ProviderFile::new(default_path());
+    if std::env::var_os("DSH_PROVIDERS").is_some() {
+        eprintln!(
+            "dsh: DSH_PROVIDERS is set and overrides {}",
+            file.path().display()
+        );
+    }
+    match args.command {
+        ProvidersCommand::List => {
+            let routes = file.load()?;
+            if routes.is_empty() {
+                println!("no providers");
+            }
+            for route in routes {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    route.name,
+                    route.model,
+                    route.base_url,
+                    route.api_key_env.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        ProvidersCommand::Add {
+            name,
+            base_url,
+            model,
+            api_key_env,
+        } => {
+            let entry = serde_json::json!([{
+                "name": name.as_str(),
+                "base_url": base_url.as_str(),
+                "model": model.as_str(),
+                "api_key_env": api_key_env.as_deref(),
+            }]);
+            parse_providers(&entry.to_string()).map_err(provider_entry_error)?;
+            file.add(ProviderConfig {
+                name: name.clone(),
+                base_url,
+                model,
+                api_key_env,
+            })?;
+            println!("stored {name}");
+        }
+        ProvidersCommand::Remove { name } => {
+            let removed = file.remove(&name)?;
+            println!("{}", if removed { "removed" } else { "not found" });
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn provider_entry_error(error: ProviderError) -> anyhow::Error {
+    match error {
+        ProviderError::Entry { reason, .. } => anyhow!("{reason}"),
+        other => anyhow!("{other}"),
+    }
+}
+
 fn telemetry() -> anyhow::Result<ExitCode> {
-    let config = config_from_env()?;
+    let config = config_from_env_base()?;
     let store = dsh_telemetry::Telemetry::new(config.home.join("telemetry.json"));
     let snapshot = store.load()?;
     println!("{}", serde_json::to_string_pretty(&snapshot)?);

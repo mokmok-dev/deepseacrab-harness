@@ -249,7 +249,9 @@ where
     })
 }
 
-fn default_home() -> PathBuf {
+/// Platform data directory used when `DSH_HOME` is unset.
+#[must_use]
+pub fn default_home() -> PathBuf {
     dirs::data_local_dir().map_or_else(
         || PathBuf::from(".deepseacrab"),
         |directory| directory.join("deepseacrab"),

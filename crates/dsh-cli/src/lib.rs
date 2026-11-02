@@ -5,5 +5,6 @@
 
 pub mod cli;
 pub mod commands;
+mod providers;
 
 pub use commands::run;

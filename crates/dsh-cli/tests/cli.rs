@@ -791,3 +791,293 @@ fn config_reports_an_unreadable_credential_file() {
         .stdout(predicate::str::contains("\"credential_error\""))
         .stdout(predicate::str::contains("\"api_key_present\": false"));
 }
+
+#[test]
+fn providers_add_list_remove_round_trip() {
+    let home = fresh_home();
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args([
+            "providers",
+            "add",
+            "local-gw",
+            "--base-url",
+            "http://127.0.0.1:1234",
+            "--model",
+            "local-model",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("stored local-gw"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args(["providers", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "local-gw\tlocal-model\thttp://127.0.0.1:1234\t-",
+        ));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env("DSH_PROVIDERS", "[]")
+        .args(["providers", "list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "DSH_PROVIDERS is set and overrides",
+        ))
+        .stdout(predicate::str::contains("local-gw"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"provider\": \"local-gw\""))
+        .stdout(predicate::str::contains("\"model\": \"local-model\""));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args(["providers", "remove", "local-gw"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args(["providers", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no providers"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"provider\": \"deepseek\""))
+        .stdout(predicate::str::contains("deepseek-flash"));
+}
+
+#[test]
+fn a_provider_file_route_runs_without_environment_configuration() {
+    let (port, server) = spawn_capturing_sse_server();
+    let home = fresh_home();
+    let cwd = tempfile::tempdir().expect("temporary cwd");
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args(["auth", "set", "local-gw"])
+        .write_stdin("stored-secret\n")
+        .assert()
+        .success();
+    let base_url = format!("http://127.0.0.1:{port}");
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args([
+            "providers",
+            "add",
+            "local-gw",
+            "--base-url",
+            base_url.as_str(),
+            "--model",
+            "local-model",
+        ])
+        .assert()
+        .success();
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .env_remove("DEEPSEEK_API_KEY")
+        .env_remove("DEEPSEEK_BASE_URL")
+        .env_remove("DEEPSEEK_MODEL")
+        .env("DSH_MAX_STEPS", "1")
+        .args([
+            "run",
+            "--session-id",
+            "session-file-provider",
+            "--cwd",
+            cwd.path().to_str().expect("utf-8 cwd"),
+            "say hello",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+
+    let request = String::from_utf8_lossy(&server.join().expect("sse server")).to_lowercase();
+    assert!(request.contains("x-api-key: stored-secret"));
+    assert!(request.contains("\"model\":\"local-model\""));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args(["sessions", "export", "session-file-provider"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""provider":"local-gw""#))
+        .stdout(predicate::str::contains(r#""model":"local-model""#));
+}
+
+#[test]
+fn environment_providers_override_the_file() {
+    let home = fresh_home();
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args([
+            "providers",
+            "add",
+            "file-gw",
+            "--base-url",
+            "https://file.example",
+            "--model",
+            "file-model",
+        ])
+        .assert()
+        .success();
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env(
+            "DSH_PROVIDERS",
+            r#"[{"name":"env-gw","base_url":"https://env.example","model":"env-model"}]"#,
+        )
+        .env_remove("DSH_PROVIDER")
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"provider\": \"env-gw\""))
+        .stdout(predicate::str::contains("\"model\": \"env-model\""))
+        .stdout(predicate::str::contains("file-gw").not());
+}
+
+#[test]
+fn providers_add_rejects_bad_entries() {
+    let home = fresh_home();
+    for (args, expected) in [
+        (
+            vec![
+                "providers",
+                "add",
+                "bad-gw",
+                "--base-url",
+                "ftp://gw",
+                "--model",
+                "m",
+            ],
+            "base URL must start with http:// or https://",
+        ),
+        (
+            vec![
+                "providers",
+                "add",
+                "bad-gw",
+                "--base-url",
+                "http://127.0.0.1:1",
+                "--model",
+                " ",
+            ],
+            "model must not be blank",
+        ),
+        (
+            vec![
+                "providers",
+                "add",
+                "bad name",
+                "--base-url",
+                "http://127.0.0.1:1",
+                "--model",
+                "m",
+            ],
+            "is invalid: use 1 to 64 ASCII letters",
+        ),
+        (
+            vec![
+                "providers",
+                "add",
+                "deepseek",
+                "--base-url",
+                "http://127.0.0.1:1",
+                "--model",
+                "m",
+            ],
+            "reserved for the built-in route",
+        ),
+    ] {
+        dsh()
+            .env("DSH_HOME", home.path())
+            .env_remove("DSH_PROVIDERS")
+            .env_remove("DSH_PROVIDER")
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(expected));
+    }
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args(["providers", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no providers"));
+}
+
+#[test]
+fn inspection_commands_survive_a_malformed_provider_file() {
+    let home = fresh_home();
+    let path = home.path().join("providers.json");
+    std::fs::write(&path, "{").expect("malformed provider file");
+    let path_text = path.display().to_string();
+
+    for command in [vec!["sessions", "list"], vec!["auth", "list"]] {
+        dsh()
+            .env("DSH_HOME", home.path())
+            .env_remove("DSH_PROVIDERS")
+            .env_remove("DSH_PROVIDER")
+            .args(command)
+            .assert()
+            .success();
+    }
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .arg("config")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(path_text.as_str()));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .env_remove("DEEPSEEK_API_KEY")
+        .args(["run", "hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(path_text.as_str()));
+}

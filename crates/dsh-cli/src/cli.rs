@@ -23,6 +23,8 @@ pub enum Command {
     Schedules(SchedulesArgs),
     /// Manage locally stored provider credentials.
     Auth(AuthArgs),
+    /// Inspect or edit durable provider routes.
+    Providers(ProvidersArgs),
     /// Print local run telemetry.
     Telemetry,
     /// List registered tools.
@@ -158,6 +160,37 @@ pub enum AuthCommand {
     Remove {
         /// Provider name.
         provider: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct ProvidersArgs {
+    #[command(subcommand)]
+    pub command: ProvidersCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProvidersCommand {
+    /// List durable provider routes.
+    List,
+    /// Store or replace one provider route.
+    Add {
+        /// Route name, such as `local-gw`.
+        name: String,
+        /// Messages root, without `/v1/messages`.
+        #[arg(long)]
+        base_url: String,
+        /// Model id sent with every request on this route.
+        #[arg(long)]
+        model: String,
+        /// Variable holding the key; omit to use a stored credential.
+        #[arg(long)]
+        api_key_env: Option<String>,
+    },
+    /// Remove a provider route.
+    Remove {
+        /// Route name.
+        name: String,
     },
 }
 
@@ -305,5 +338,80 @@ mod tests {
     fn rejects_a_missing_subcommand() {
         assert!(Cli::try_parse_from(["dsh"]).is_err());
         assert!(Cli::try_parse_from(["dsh", "unknown"]).is_err());
+    }
+
+    #[test]
+    fn parses_provider_list() {
+        let cli = Cli::try_parse_from(["dsh", "providers", "list"]).expect("list");
+        let Command::Providers(args) = cli.command else {
+            panic!("expected providers");
+        };
+        assert!(matches!(args.command, ProvidersCommand::List));
+    }
+
+    #[test]
+    fn parses_provider_add() {
+        let cli = Cli::try_parse_from([
+            "dsh",
+            "providers",
+            "add",
+            "local-gw",
+            "--base-url",
+            "http://127.0.0.1:1234",
+            "--model",
+            "qwen3-coder",
+            "--api-key-env",
+            "LOCAL_GW_KEY",
+        ])
+        .expect("add");
+        let Command::Providers(args) = cli.command else {
+            panic!("expected providers");
+        };
+        assert!(matches!(
+            args.command,
+            ProvidersCommand::Add {
+                ref name,
+                ref base_url,
+                ref model,
+                api_key_env: Some(ref var),
+            } if name == "local-gw"
+                && base_url == "http://127.0.0.1:1234"
+                && model == "qwen3-coder"
+                && var == "LOCAL_GW_KEY"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "dsh",
+            "providers",
+            "add",
+            "local-gw",
+            "--base-url",
+            "http://127.0.0.1:1234",
+            "--model",
+            "qwen3-coder",
+        ])
+        .expect("add without a variable");
+        let Command::Providers(args) = cli.command else {
+            panic!("expected providers");
+        };
+        assert!(matches!(
+            args.command,
+            ProvidersCommand::Add {
+                api_key_env: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_provider_remove() {
+        let cli = Cli::try_parse_from(["dsh", "providers", "remove", "local-gw"]).expect("remove");
+        let Command::Providers(args) = cli.command else {
+            panic!("expected providers");
+        };
+        assert!(matches!(
+            args.command,
+            ProvidersCommand::Remove { ref name } if name == "local-gw"
+        ));
     }
 }
