@@ -189,6 +189,7 @@ fn agent_config(config: &Config, cwd: PathBuf) -> anyhow::Result<AgentConfig> {
         max_retries: config.max_retries,
         retry_base_ms: config.retry_base_ms,
         max_context_chars: config.max_context_chars,
+        sandbox: dsh_sandbox::sandbox(config.sandbox),
         parent_session: None,
     })
 }
@@ -201,6 +202,14 @@ fn add_delegation_tools(
     clock: &Arc<dyn Clock>,
 ) -> anyhow::Result<()> {
     let base = tools.clone();
+    let team = Arc::new(dsh_team::TeamRuntime::new(
+        Arc::clone(store),
+        Arc::clone(provider),
+        base.clone(),
+        config.clone(),
+        Arc::clone(clock),
+        config.state_dir.clone(),
+    ));
     tools.insert(Arc::new(dsh_agent::SubagentTool::new(
         Arc::clone(store),
         Arc::clone(provider),
@@ -222,6 +231,9 @@ fn add_delegation_tools(
         config.clone(),
         Arc::clone(clock),
     )))?;
+    for tool in team.tools() {
+        tools.insert(tool)?;
+    }
     Ok(())
 }
 
@@ -539,6 +551,7 @@ fn show_config() -> anyhow::Result<ExitCode> {
         "max_retries": config.max_retries,
         "retry_base_ms": config.retry_base_ms,
         "max_context_chars": config.max_context_chars,
+        "sandbox": config.sandbox.as_str(),
         "permission": permission,
         "home": home,
         "database": database,
@@ -680,6 +693,8 @@ mod tests {
         assert!(names.iter().any(|name| name == "subagent"));
         assert!(names.iter().any(|name| name == "workflow"));
         assert!(names.iter().any(|name| name == "ralph"));
+        assert!(names.iter().any(|name| name == "spawn_teammate"));
+        assert!(names.iter().any(|name| name == "team_task_list"));
     }
 
     #[test]

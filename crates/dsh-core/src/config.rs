@@ -1,6 +1,7 @@
 //! Deployment configuration parsed once at the process boundary.
 
 use crate::llm::ReasoningEffort;
+use crate::sandbox::SandboxMode;
 use crate::tool::PermissionMode;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -61,6 +62,8 @@ pub struct Config {
     pub retry_base_ms: u64,
     /// Estimated history characters that trigger compaction.
     pub max_context_chars: usize,
+    /// Execution confinement mode.
+    pub sandbox: SandboxMode,
     /// Effective permission mode.
     pub permission: PermissionMode,
     /// Harness home directory for sessions and configuration.
@@ -82,6 +85,7 @@ impl Default for Config {
             max_retries: 2,
             retry_base_ms: 500,
             max_context_chars: 200_000,
+            sandbox: SandboxMode::Off,
             permission: PermissionMode::WorkspaceWrite,
             home: default_home(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
@@ -127,6 +131,13 @@ impl Config {
         let max_retries = parse_u32(&lookup, "DSH_MAX_RETRIES", 2)?;
         let retry_base_ms = parse_u64(&lookup, "DSH_RETRY_BASE_MS", 500)?;
         let max_context_chars = parse_positive_usize(&lookup, "DSH_MAX_CONTEXT_CHARS", 200_000)?;
+        let sandbox = match lookup("DSH_SANDBOX") {
+            Some(raw) => SandboxMode::parse(&raw).ok_or(ConfigError::InvalidValue {
+                key: "DSH_SANDBOX",
+                value: raw,
+            })?,
+            None => SandboxMode::Off,
+        };
 
         let effort = match lookup("DSH_REASONING_EFFORT") {
             Some(raw) => ReasoningEffort::parse(&raw).ok_or(ConfigError::InvalidValue {
@@ -159,6 +170,7 @@ impl Config {
             max_retries,
             retry_base_ms,
             max_context_chars,
+            sandbox,
             permission,
             home,
             system_prompt,
@@ -322,6 +334,7 @@ mod tests {
         assert_eq!(config.max_retries, 2);
         assert_eq!(config.retry_base_ms, 500);
         assert_eq!(config.max_context_chars, 200_000);
+        assert_eq!(config.sandbox, SandboxMode::Off);
         assert_eq!(config.effort, ReasoningEffort::High);
         assert_eq!(config.permission, PermissionMode::WorkspaceWrite);
         assert_eq!(config.api_key_env, "DEEPSEEK_API_KEY");
@@ -340,6 +353,7 @@ mod tests {
             ("DSH_MAX_RETRIES", "0"),
             ("DSH_RETRY_BASE_MS", "25"),
             ("DSH_MAX_CONTEXT_CHARS", "4096"),
+            ("DSH_SANDBOX", "bubblewrap"),
             ("DSH_REASONING_EFFORT", "low"),
             ("DSH_PERMISSION_MODE", "read-only"),
             ("DSH_HOME", "/tmp/dsh-home"),
@@ -355,6 +369,7 @@ mod tests {
         assert_eq!(config.max_retries, 0);
         assert_eq!(config.retry_base_ms, 25);
         assert_eq!(config.max_context_chars, 4096);
+        assert_eq!(config.sandbox, SandboxMode::Bubblewrap);
         assert_eq!(config.effort, ReasoningEffort::Low);
         assert_eq!(config.permission, PermissionMode::ReadOnly);
         assert_eq!(config.home, PathBuf::from("/tmp/dsh-home"));

@@ -123,7 +123,8 @@ fn config_reports_defaults_without_a_key() {
         .success()
         .stdout(predicate::str::contains("\"model\""))
         .stdout(predicate::str::contains("deepseek-flash"))
-        .stdout(predicate::str::contains("\"api_key_present\": false"));
+        .stdout(predicate::str::contains("\"api_key_present\": false"))
+        .stdout(predicate::str::contains("\"sandbox\": \"off\""));
 }
 
 #[test]
@@ -185,11 +186,13 @@ fn config_uses_environment_overrides() {
         .env("DSH_HOME", home.path())
         .env("DEEPSEEK_MODEL", "deepseek-v4-pro")
         .env("DSH_PERMISSION_MODE", "read-only")
+        .env("DSH_SANDBOX", "bubblewrap")
         .arg("config")
         .assert()
         .success()
         .stdout(predicate::str::contains("deepseek-v4-pro"))
-        .stdout(predicate::str::contains("\"permission\": \"read-only\""));
+        .stdout(predicate::str::contains("\"permission\": \"read-only\""))
+        .stdout(predicate::str::contains("\"sandbox\": \"bubblewrap\""));
 }
 
 #[test]

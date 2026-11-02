@@ -10,10 +10,10 @@ The headless product works end to end. A task can be submitted from the CLI, the
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 659 tests passed.
+- `cargo test --workspace`: 699 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The thirteen crates produced 833 caught viable mutants and 273 unviable mutants.
+- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The fifteen crates produced 886 caught viable mutants and 309 unviable mutants.
 - `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
 
 ## Quick start
@@ -100,12 +100,13 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 | `DSH_LSP_SERVERS` | none | JSON array of LSP stdio server configurations. |
 | `DSH_REASONING_EFFORT` | `high` | `off`, `low`, `high`, or `max`. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | Tool permission mode. |
+| `DSH_SANDBOX` | `off` | `off` or `bubblewrap` for shell execution. |
 | `DSH_HOME` | platform data directory | Session database and harness state. |
 | `DSH_SYSTEM_PROMPT` | built-in prompt | System instruction block. |
 
 ## Architecture
 
-The workspace is thirteen crates. Dependencies point downward only.
+The workspace is fifteen crates. Dependencies point downward only.
 
 | Crate | Owns |
 |---|---|
@@ -115,8 +116,10 @@ The workspace is thirteen crates. Dependencies point downward only.
 | `dsh-tools` | Model-facing tools and their plugin. |
 | `dsh-jobs` | Background shell job tools. |
 | `dsh-schedule` | Durable scheduled follow-ups and their tools. |
+| `dsh-team` | Durable agent team roster, tasks, and messaging tools. |
 | `dsh-terminal` | Persistent PTY terminals and their tools. |
 | `dsh-lsp` | LSP stdio client and the `lsp` tool. |
+| `dsh-sandbox` | Bubblewrap confinement for shell execution. |
 | `dsh-mcp` | MCP stdio client that registers external tools. |
 | `dsh-agent` | Turn and step driver, streaming assembly, tool batching, subagents. |
 | `dsh-web` | Browser client with JSON and SSE routes. |
@@ -125,11 +128,13 @@ The workspace is thirteen crates. Dependencies point downward only.
 
 The full design is in [docs/architecture.md](docs/architecture.md). The upstream coverage table and the deliberate omissions are in [docs/rewrite-scope.md](docs/rewrite-scope.md).
 
-The model-facing registry contains 31 first-party tools in a run: `bash`, `read_file`, `read_image`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, `ralph`, `job_start`, `job_list`, `job_output`, `job_kill`, `schedule_create`, `schedule_list`, `schedule_cancel`, `terminal_open`, `terminal_read`, `terminal_write`, and `terminal_close`. `dsh tools` lists the 28 statically composed tools; `subagent`, `workflow`, and `ralph` are added with their child-session seams at run time. An `lsp` tool appears when `DSH_LSP_SERVERS` configures language servers, and MCP servers add one tool per remote declaration.
+The model-facing registry contains 38 first-party tools in a run: `bash`, `read_file`, `read_image`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, `ralph`, `spawn_teammate`, `list_agents`, `send_message`, `wait_agent`, `team_task_create`, `team_task_list`, `team_task_update`, `job_start`, `job_list`, `job_output`, `job_kill`, `schedule_create`, `schedule_list`, `schedule_cancel`, `terminal_open`, `terminal_read`, `terminal_write`, and `terminal_close`. `dsh tools` lists the 28 statically composed tools; the delegation and team tools are added with their runtime seams. An `lsp` tool appears when `DSH_LSP_SERVERS` configures language servers, and MCP servers add one tool per remote declaration.
 
 ## Safety
 
 The default permission mode is `workspace-write`. Filesystem tools resolve paths lexically and refuse paths outside the session directory. `read-only` refuses writes, shell execution, and network fetches. `danger-full-access` removes the path boundary and should be used deliberately.
+
+Set `DSH_SANDBOX=bubblewrap` to wrap `bash` execution in a bubblewrap mount namespace with a read-only root and a writable session directory. The terminal tools remain process-local PTYs and are not wrapped yet.
 
 Tool panics are contained and returned as tool errors, so the matching tool result is always settled in the log.
 

@@ -3,8 +3,8 @@
 use crate::assembler::AssistantAssembler;
 use dsh_core::config::{DEFAULT_MAX_PARALLEL_TOOLS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TOKENS};
 use dsh_core::{
-    Clock, EventRecord, LlmError, LlmProvider, LlmRequest, Message, MessageId, ModelId,
-    PermissionMode, ProviderId, ReasoningEffort, SessionEvent, SessionHeader, SessionId,
+    Clock, EventRecord, LlmError, LlmProvider, LlmRequest, Message, MessageId, ModelId, NoSandbox,
+    PermissionMode, ProviderId, ReasoningEffort, Sandbox, SessionEvent, SessionHeader, SessionId,
     SessionStore, StepId, StoreError, StreamEvent, TokenUsage, ToolCall, ToolContext, ToolMessage,
     ToolRegistry, ToolSession, TurnId, TurnOutcome, UserMessage, derive_messages,
 };
@@ -17,7 +17,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 /// Per-run model, policy, and workspace settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct AgentConfig {
     /// Route model id.
     pub model: ModelId,
@@ -43,6 +43,8 @@ pub struct AgentConfig {
     pub retry_base_ms: u64,
     /// Estimated history characters that trigger compaction.
     pub max_context_chars: usize,
+    /// Execution confinement mode.
+    pub sandbox: Arc<dyn Sandbox>,
     /// Direct creator of a child session.
     pub parent_session: Option<SessionId>,
 }
@@ -64,6 +66,7 @@ impl AgentConfig {
             max_retries: 2,
             retry_base_ms: 500,
             max_context_chars: 200_000,
+            sandbox: Arc::new(NoSandbox),
             parent_session: None,
         }
     }
@@ -432,6 +435,7 @@ impl AgentLoop {
 
             let context = ToolContext::new(cwd, self.config.permission, cancel.clone())
                 .with_state_dir(self.config.state_dir.clone())
+                .with_sandbox(Arc::clone(&self.config.sandbox))
                 .with_session(Arc::clone(&session_handle));
             let results = self.execute_calls(&calls, &context, &cancel, &sink).await;
             for result in results {

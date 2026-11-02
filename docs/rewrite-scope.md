@@ -18,8 +18,8 @@ All six are verified. See the root README for the measured counts.
 ## Milestone status
 
 - **M1, foundation: complete.** Session header, fork, export, search, and repair; bounded retry; durable compaction; todo, plan, goal, working-directory, and session-search tools; `glob`, `str_replace_editor`, and `skill`.
-- **M2, delegation and work: partial.** `subagent`, `workflow`, `ralph`, the four `job_*` tools, and the `schedule_*` tools with `schedules run-due` are in. Agent teams are not.
-- **M3, integrations and execution: partial.** MCP stdio, `web_search`, persistent PTY terminals, the LSP tool, and inline image input are in. SSH, OS sandboxing, file attachments, and browser or computer use are not.
+- **M2, delegation and work: complete for this scope.** `subagent`, `workflow`, `ralph`, the seven team tools, the four `job_*` tools, and the `schedule_*` tools with `schedules run-due` are in.
+- **M3, integrations and execution: partial.** MCP stdio, `web_search`, persistent PTY terminals, the LSP tool, inline image input, and bubblewrap confinement for `bash` are in. SSH, file attachments, browser use, and computer use are not.
 - **M4, surfaces and distribution: partial.** The browser client and the JSON-RPC SDK are in. ACP, the API/BFF, plugin manager and market, stored credentials, telemetry, and i18n are not.
 - **M5, hardening: pending.** Cross-platform checks, session-format migrations, performance gates, and the remaining snapshot matrix are not done.
 
@@ -42,7 +42,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `terminal` | Ported | `terminal_open`, `terminal_read`, `terminal_write`, and `terminal_close` over one process-local PTY registry. |
 | `ssh` | Not ported | No remote execution. |
 | `ptc-runtime` | Not ported | No programmatic tool calling. |
-| `sandbox` | Partial | Permission modes and lexical path policy. No OS-level confinement. |
+| `sandbox` | Partial | Permission modes, lexical path policy, and bubblewrap confinement for `bash`. Terminal PTYs are not wrapped. |
 | `fs/fs-local`, `tool-fs`, `tool-fs-search`, `tool-str-replace-editor` | Ported subset | `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`. No patch format, observation policy, or LSP-guided edits. |
 | `web/tool-web` | Partial | `web_fetch` and `web_search`. No alternate search provider. |
 | `lsp` | Ported subset | Hover, definition, references, and document symbols over Content-Length framed JSON-RPC. No diagnostics, completion, rename, or code actions. |
@@ -50,7 +50,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `computer-use`, `browser-use` | Not ported | |
 | `compaction` | Not ported | History grows until the provider limit. |
 | `context` | Partial | Session working directory only. |
-| `subagent` | Not ported | |
+| `subagent` | Ported subset | `subagent`, `workflow`, `ralph`, and a durable team roster with seven team tools. No external provider backends or continuable cross-product children. |
 | `jobs` | Ported | `job_start`, `job_list`, `job_output`, `job_kill` over a durable job directory. |
 | `bundle` | Replaced | The CLI composes `Plugin` values directly. |
 | `workflow` | Partial | Ordered child-session steps with stop-on-failure. No script engine, branching, or parallel stages. |
@@ -113,6 +113,8 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | 2026-11-02 | Terminals are process-local and bounded | A PTY cannot survive the harness process without a supervisor. A per-terminal cursor and a 1 MiB rolling log give the model incremental output without unbounded memory. |
 | 2026-11-02 | LSP uses Content-Length framing and a bounded unmatched-frame budget | LSP framing differs from MCP newline framing. A server that never answers must not hang the tool, so unmatched frames are bounded. |
 | 2026-11-02 | Images are inline base64 content blocks | `read_image` attaches the pixels beside a caption, and the Messages serializer maps the block to an inline `image` source. No Files API or image offload in this pass. |
+| 2026-11-02 | Sandbox is a command resolver, not a second tool path | `bash` asks the configured provider for a program and arguments, so confinement changes the process it spawns without changing the tool contract. Bubblewrap gets a read-only root and a writable session directory. |
+| 2026-11-02 | Team state is one JSON file plus in-process tasks | The roster and tasks must survive a restart; live joins must not. One locked state and one atomic file keep the seven tools consistent without a second database. |
 | 2026-11-02 | Jobs use a durable directory, not in-memory handles | A job must survive the process that started it. Pid, output, and status files make listing and output reads independent of the agent. |
 | 2026-11-02 | MCP tools are prefixed with the server name | Two servers can expose the same tool name; the registry rejects duplicates. The prefix keeps both available. |
 | 2026-11-02 | The web run is a POST SSE stream | `EventSource` only supports GET. A POST stream lets the browser send the task and consume frames from one request. |

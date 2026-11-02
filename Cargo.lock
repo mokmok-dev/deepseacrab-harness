@@ -497,9 +497,11 @@ dependencies = [
  "dsh-llm",
  "dsh-lsp",
  "dsh-mcp",
+ "dsh-sandbox",
  "dsh-schedule",
  "dsh-sdk",
  "dsh-session",
+ "dsh-team",
  "dsh-terminal",
  "dsh-tools",
  "dsh-web",
@@ -598,6 +600,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsh-sandbox"
+version = "2026.11.1"
+dependencies = [
+ "dsh-core",
+ "serde",
+]
+
+[[package]]
 name = "dsh-schedule"
 version = "2026.11.1"
 dependencies = [
@@ -642,6 +652,24 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "dsh-team"
+version = "2026.11.1"
+dependencies = [
+ "async-trait",
+ "dsh-agent",
+ "dsh-core",
+ "futures-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

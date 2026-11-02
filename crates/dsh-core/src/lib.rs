@@ -15,6 +15,7 @@ pub mod llm;
 pub mod message;
 pub mod permission;
 pub mod plugin;
+pub mod sandbox;
 pub mod session;
 pub mod store;
 pub mod tool;
@@ -39,6 +40,7 @@ pub use plugin::{
     Clock, ComposeError, Effect, FixedClock, Plugin, PluginContext, PluginError, Registry, Runtime,
     SystemClock, compose,
 };
+pub use sandbox::{NoSandbox, Sandbox, SandboxCommand, SandboxMode};
 pub use session::{SESSION_FORMAT_VERSION, SessionHeader, SessionSearchHit, SessionSummary};
 pub use store::{SessionStore, StoreError};
 pub use tool::{

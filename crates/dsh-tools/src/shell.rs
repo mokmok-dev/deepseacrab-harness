@@ -2,7 +2,7 @@
 
 use crate::input::parse;
 use async_trait::async_trait;
-use dsh_core::{Tool, ToolContext, ToolOutcome, ToolSchema};
+use dsh_core::{SandboxCommand, Tool, ToolContext, ToolOutcome, ToolSchema};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::process::Stdio;
@@ -62,10 +62,13 @@ impl Tool for BashTool {
 
 async fn run(context: &ToolContext, command_line: &str, timeout_ms: Option<u64>) -> ToolOutcome {
     let timeout_ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-    let mut command = Command::new("bash");
+    let spec = context.sandbox.as_ref().map_or_else(
+        || SandboxCommand::shell(command_line),
+        |sandbox| sandbox.wrap(command_line, &context.cwd, context.permission),
+    );
+    let mut command = Command::new(&spec.program);
     command
-        .arg("-lc")
-        .arg(command_line)
+        .args(&spec.args)
         .current_dir(&context.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -277,5 +280,35 @@ mod tests {
             format_output(0, "a", "b"),
             "exit_code: 0\nstdout:\na\nstderr:\nb"
         );
+    }
+
+    struct RecordingSandbox;
+
+    impl dsh_core::Sandbox for RecordingSandbox {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        fn wrap(
+            &self,
+            command: &str,
+            _cwd: &std::path::Path,
+            _permission: PermissionMode,
+        ) -> dsh_core::SandboxCommand {
+            dsh_core::SandboxCommand {
+                program: "bash".to_string(),
+                args: vec!["-lc".to_string(), format!("echo sandboxed; {command}")],
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sandbox_commands_are_used() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let context = context(directory.path(), PermissionMode::WorkspaceWrite)
+            .with_sandbox(std::sync::Arc::new(RecordingSandbox));
+        let outcome = BashTool.execute(&context, json!({"command": "true"})).await;
+        assert!(!outcome.is_error);
+        assert!(outcome.text_content().contains("sandboxed"));
     }
 }

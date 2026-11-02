@@ -4,6 +4,7 @@ use crate::event::{EventRecord, SessionEvent};
 use crate::ids::SessionId;
 use crate::message::ContentBlock;
 use crate::permission::{PathError, ensure_within};
+use crate::sandbox::Sandbox;
 use crate::store::StoreError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,8 @@ pub struct ToolContext {
     pub cancel: CancellationToken,
     /// Durable session access for session-owned tools.
     pub session: Option<Arc<dyn ToolSession>>,
+    /// Execution confinement for shell and terminal tools.
+    pub sandbox: Option<Arc<dyn Sandbox>>,
 }
 
 impl ToolContext {
@@ -131,7 +134,15 @@ impl ToolContext {
             permission,
             cancel,
             session: None,
+            sandbox: None,
         }
+    }
+
+    /// Attach an execution sandbox.
+    #[must_use]
+    pub fn with_sandbox(mut self, sandbox: Arc<dyn Sandbox>) -> Self {
+        self.sandbox = Some(sandbox);
+        self
     }
 
     /// Set the harness state directory.
