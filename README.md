@@ -33,6 +33,13 @@ cargo run -p dsh-cli --bin dsh -- run "say hello"
 
 No `DEEPSEEK_*` variable is read for a route that is not the built-in `deepseek` one. `--api-key-env LOCAL_GW_KEY` names a variable instead of a stored secret, and is optional.
 
+The credential travels as `x-api-key` by default. Pass `--auth bearer` for an endpoint that expects `Authorization: Bearer`, such as Ollama Cloud:
+
+```sh
+cargo run -p dsh-cli --bin dsh -- providers add ollama-cloud --base-url https://ollama.com/v1 --model deepseek-v4.1-flash:1017 --auth bearer
+cargo run -p dsh-cli --bin dsh -- auth set ollama-cloud
+```
+
 The `DSH_PROVIDERS` environment variable overrides the file when it is set:
 
 ```sh
@@ -100,7 +107,7 @@ cargo run -p dsh-cli --bin dsh -- sdk
 | `dsh auth list` | List providers with stored secrets. |
 | `dsh auth remove <provider>` | Remove a stored provider secret. |
 | `dsh providers list` | List durable provider routes. |
-| `dsh providers add <name> --base-url <url> --model <id> [--api-key-env <var>]` | Store or replace one route in `$DSH_HOME/providers.json`. |
+| `dsh providers add <name> --base-url <url> --model <id> [--api-key-env <var>] [--auth <style>]` | Store or replace one route in `$DSH_HOME/providers.json`. `--auth` is `x-api-key` (default) or `bearer`. |
 | `dsh providers remove <name>` | Remove one durable provider route. |
 | `dsh telemetry` | Print local run counters. |
 | `dsh tools` | List the model-facing tool registry. |
@@ -116,7 +123,7 @@ Provider routes written by `dsh providers` live in `$DSH_HOME/providers.json`. W
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DSH_PROVIDERS` | none | JSON array of provider routes: `name`, `base_url`, `model`, optional `api_key_env`. |
+| `DSH_PROVIDERS` | none | JSON array of provider routes: `name`, `base_url`, `model`, optional `api_key_env`, optional `auth` (`x-api-key` or `bearer`, default `x-api-key`). |
 | `DSH_PROVIDER` | The built-in `deepseek` route when no route is configured, otherwise the sole configured route | Route to use. Required when two or more routes are configured. |
 | `DEEPSEEK_API_KEY` | none | Credential for the built-in `deepseek` route. Or run `dsh auth set deepseek`. |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/anthropic` | Built-in route's Messages root. |

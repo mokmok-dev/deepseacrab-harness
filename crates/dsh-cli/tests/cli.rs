@@ -730,6 +730,83 @@ fn a_route_name_keys_a_stored_credential() {
 }
 
 #[test]
+fn a_bearer_route_sends_the_authorization_header() {
+    let (port, server) = spawn_capturing_sse_server();
+    let home = fresh_home();
+    let cwd = tempfile::tempdir().expect("temporary cwd");
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DEEPSEEK_API_KEY")
+        .env(
+            "DSH_PROVIDERS",
+            format!(
+                r#"[{{"name":"ollama-cloud","base_url":"http://127.0.0.1:{port}","model":"local-model","api_key_env":"OLLAMA_API_KEY","auth":"bearer"}}]"#
+            ),
+        )
+        .env("OLLAMA_API_KEY", "local-secret")
+        .env("DSH_MAX_STEPS", "1")
+        .args([
+            "run",
+            "--cwd",
+            cwd.path().to_str().expect("utf-8 cwd"),
+            "say hello",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+
+    let request = String::from_utf8_lossy(&server.join().expect("sse server")).to_lowercase();
+    assert!(
+        request.contains("authorization: bearer local-secret"),
+        "{request}"
+    );
+    assert!(!request.contains("x-api-key"), "{request}");
+}
+
+#[test]
+fn providers_add_records_the_auth_style() {
+    let home = fresh_home();
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args([
+            "providers",
+            "add",
+            "ollama-cloud",
+            "--base-url",
+            "https://ollama.com/v1",
+            "--model",
+            "local-model",
+            "--auth",
+            "bearer",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("stored ollama-cloud"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .args(["providers", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ollama-cloud\tlocal-model\thttps://ollama.com/v1\t-\tbearer",
+        ));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DSH_PROVIDERS")
+        .env_remove("DSH_PROVIDER")
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"auth\": \"bearer\""));
+}
+
+#[test]
 fn config_reports_the_provider_table() {
     let home = fresh_home();
     dsh()

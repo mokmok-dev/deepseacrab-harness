@@ -9,9 +9,10 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use dsh_agent::{AgentConfig, AgentLoop, EventSink, RunEvent};
 use dsh_core::{
-    Clock, Config, ConfigOverrides, Env, EventSeq, ModelId, PermissionMode, Plugin, PluginContext,
-    PluginError, ProviderConfig, ProviderError, Runtime, SessionEvent, SessionHeader, SessionId,
-    SessionStore, SystemClock, SystemEnv, TurnOutcome, compose, parse_providers,
+    AuthStyle, Clock, Config, ConfigOverrides, Env, EventSeq, ModelId, PermissionMode, Plugin,
+    PluginContext, PluginError, ProviderConfig, ProviderError, Runtime, SessionEvent,
+    SessionHeader, SessionId, SessionStore, SystemClock, SystemEnv, TurnOutcome, compose,
+    parse_providers,
 };
 use dsh_llm::{MessagesConfig, MessagesProvider};
 use dsh_session::SqliteSessionStore;
@@ -323,6 +324,7 @@ impl Plugin for ProviderPlugin {
             name: route.name.clone(),
             base_url: route.base_url.clone(),
             api_key: resolve_credential(route, config, context.env())?,
+            auth: route.auth,
             timeout: PROVIDER_TIMEOUT,
         })
         .map_err(|error| PluginError::Failed(error.to_string()))?;
@@ -635,11 +637,12 @@ fn providers(args: ProvidersArgs) -> anyhow::Result<ExitCode> {
             }
             for route in routes {
                 println!(
-                    "{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}",
                     route.name,
                     route.model,
                     route.base_url,
-                    route.api_key_env.as_deref().unwrap_or("-")
+                    route.api_key_env.as_deref().unwrap_or("-"),
+                    route.auth.as_str()
                 );
             }
         }
@@ -648,12 +651,16 @@ fn providers(args: ProvidersArgs) -> anyhow::Result<ExitCode> {
             base_url,
             model,
             api_key_env,
+            auth,
         } => {
+            let auth = AuthStyle::parse(&auth)
+                .ok_or_else(|| anyhow!("invalid auth style `{auth}`; use x-api-key or bearer"))?;
             let entry = serde_json::json!([{
                 "name": name.as_str(),
                 "base_url": base_url.as_str(),
                 "model": model.as_str(),
                 "api_key_env": api_key_env.as_deref(),
+                "auth": auth.as_str(),
             }]);
             parse_providers(&entry.to_string()).map_err(provider_entry_error)?;
             file.add(ProviderConfig {
@@ -661,6 +668,7 @@ fn providers(args: ProvidersArgs) -> anyhow::Result<ExitCode> {
                 base_url,
                 model,
                 api_key_env,
+                auth,
             })?;
             println!("stored {name}");
         }
@@ -721,6 +729,7 @@ fn show_config() -> anyhow::Result<ExitCode> {
             "base_url": route.base_url.as_str(),
             "api_key_env": route.api_key_env.as_deref(),
             "api_key_present": present(route),
+            "auth": route.auth.as_str(),
         })
     };
     let providers: Vec<_> = config.providers().iter().map(route_value).collect();
@@ -951,6 +960,7 @@ mod tests {
             base_url: "https://api.deepseek.com/anthropic".to_string(),
             model: "deepseek-flash".to_string(),
             api_key_env: Some("DEEPSEEK_API_KEY".to_string()),
+            auth: AuthStyle::XApiKey,
         };
         assert_eq!(
             missing_credential_message(&route),
@@ -979,6 +989,7 @@ mod tests {
             base_url: "http://127.0.0.1:1".to_string(),
             model: "m".to_string(),
             api_key_env: Some("GW_KEY".to_string()),
+            auth: AuthStyle::XApiKey,
         };
         assert_eq!(
             resolve_credential(&route, &config, &MapEnv).expect("environment key"),

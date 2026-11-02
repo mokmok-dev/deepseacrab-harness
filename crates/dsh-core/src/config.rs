@@ -2,7 +2,7 @@
 
 use crate::llm::ReasoningEffort;
 use crate::provider::{
-    BUILTIN_API_KEY_ENV, DEFAULT_PROVIDER, ProviderConfig, ProviderError, ProviderTable,
+    AuthStyle, BUILTIN_API_KEY_ENV, DEFAULT_PROVIDER, ProviderConfig, ProviderError, ProviderTable,
     parse_providers,
 };
 use crate::sandbox::SandboxMode;
@@ -246,6 +246,7 @@ where
         base_url,
         model,
         api_key_env: Some(api_key_env),
+        auth: AuthStyle::XApiKey,
     })
 }
 
