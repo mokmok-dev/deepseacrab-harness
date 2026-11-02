@@ -1,4 +1,4 @@
-# DeepSeacrab Harness
+# DeepSeaCrab Harness
 
 A Rust rewrite of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for headless use. It keeps the upstream architecture where it earns its place: an append-only session log, a provider-neutral model seam, a guarded tool pipeline, and plugin composition. It drops the upstream desktop application and its browser client, and ships a small local browser client of its own.
 

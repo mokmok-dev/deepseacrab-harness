@@ -3,9 +3,9 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Headless `DeepSeek` Harness.
+/// Headless `DeepSeaCrab` Harness.
 #[derive(Debug, Parser)]
-#[command(name = "dsh", version, about = "Headless DeepSeek Harness", long_about = None)]
+#[command(name = "dsh", version, about = "Headless DeepSeaCrab Harness", long_about = None)]
 pub struct Cli {
     /// Operation to run.
     #[command(subcommand)]

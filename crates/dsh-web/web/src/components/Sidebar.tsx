@@ -25,7 +25,7 @@ export function Sidebar({
   return (
     <aside className={open ? 'sidebar sidebar-open' : 'sidebar'} aria-label="Sessions">
       <div className="sidebar-head">
-        <span className="brand">DeepSeek Harness</span>
+        <span className="brand">DeepSeaCrab Harness</span>
         <button
           type="button"
           className="icon-button close-button"

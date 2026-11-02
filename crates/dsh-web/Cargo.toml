@@ -1,6 +1,6 @@
 [package]
 name = "dsh-web"
-description = "Browser client for the DeepSeek Harness Rust rewrite"
+description = "Browser client for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

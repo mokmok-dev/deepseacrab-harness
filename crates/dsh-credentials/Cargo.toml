@@ -1,6 +1,6 @@
 [package]
 name = "dsh-credentials"
-description = "Local credential storage for the DeepSeek Harness Rust rewrite"
+description = "Local credential storage for DeepSeaCrab Harness"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

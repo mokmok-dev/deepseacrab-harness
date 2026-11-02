@@ -86,7 +86,7 @@ export function Chat({
           Sessions
         </button>
         <div className="topbar-title">
-          <span className="topbar-name">DeepSeek Harness</span>
+          <span className="topbar-name">DeepSeaCrab Harness</span>
           <span className="topbar-session" title={sessionId}>
             {shortSessionId(sessionId)}
           </span>
