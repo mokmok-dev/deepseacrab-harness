@@ -123,6 +123,9 @@
             packages =
               (with pkgs; [
                 cargo-mutants
+                ni
+                nodejs
+                pnpm
                 rustToolchain
                 sccache
               ])
