@@ -12,6 +12,7 @@
 //! Failures are returned as [`dsh_core::ToolOutcome::error`] so the agent loop
 //! can always settle the matching tool result.
 
+mod apply_patch;
 mod editing;
 mod glob;
 mod http;
@@ -26,6 +27,7 @@ mod skill;
 mod str_replace;
 mod web_search;
 mod working_directory;
+mod worktree;
 mod writing;
 
 #[cfg(test)]
@@ -61,8 +63,10 @@ pub fn default_registry() -> Result<ToolRegistry, ToolRegistryError> {
 
 fn builtin_tools() -> Vec<Arc<dyn Tool>> {
     vec![
+        Arc::new(apply_patch::ApplyPatchTool::default()),
         Arc::new(shell::BashTool),
         Arc::new(session_tools::GoalTool),
+        Arc::new(worktree::CreateWorktreeTool::default()),
         Arc::new(editing::EditFileTool),
         Arc::new(glob::GlobTool),
         Arc::new(searching::GrepTool),
@@ -95,8 +99,10 @@ mod tests {
 
     fn expected_names() -> Vec<String> {
         [
+            "apply_patch",
             "bash",
             "create_goal",
+            "create_worktree",
             "edit_file",
             "glob",
             "grep",

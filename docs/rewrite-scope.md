@@ -17,7 +17,7 @@ All six are verified. See the root README for the measured counts.
 
 ## Milestone status
 
-- **M1, foundation: complete.** Session header, fork, export, search, and repair; bounded retry; durable compaction; todo, plan, goal, working-directory, and session-search tools; `glob`, `str_replace_editor`, and `skill`.
+- **M1, foundation: complete.** Session header, fork, export, search, and repair; bounded retry; durable compaction; todo, plan, goal, working-directory, and session-search tools; `apply_patch`, `glob`, `str_replace_editor`, `read_image`, `create_worktree`, and `skill`.
 - **M2, delegation and work: complete for this scope.** `subagent`, `workflow`, `ralph`, the seven team tools, the four `job_*` tools, and the `schedule_*` tools with `schedules run-due` are in.
 - **M3, integrations and execution: partial.** MCP stdio, `web_search`, persistent PTY terminals, the LSP tool, inline image input, and bubblewrap confinement for `bash` are in. SSH, file attachments, browser use, and computer use are not.
 - **M4, surfaces and distribution: partial.** The browser client and the JSON-RPC SDK are in. ACP, the API/BFF, plugin manager and market, stored credentials, telemetry, and i18n are not.
@@ -43,7 +43,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `ssh` | Not ported | No remote execution. |
 | `ptc-runtime` | Not ported | No programmatic tool calling. |
 | `sandbox` | Partial | Permission modes, lexical path policy, and bubblewrap confinement for `bash`. Terminal PTYs are not wrapped. |
-| `fs/fs-local`, `tool-fs`, `tool-fs-search`, `tool-str-replace-editor` | Ported subset | `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`. No patch format, observation policy, or LSP-guided edits. |
+| `fs/fs-local`, `tool-fs`, `tool-fs-search`, `tool-str-replace-editor` | Ported subset | `apply_patch`, `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`. No observation policy or LSP-guided edits. |
 | `web/tool-web` | Partial | `web_fetch` and `web_search`. No alternate search provider. |
 | `lsp` | Ported subset | Hover, definition, references, and document symbols over Content-Length framed JSON-RPC. No diagnostics, completion, rename, or code actions. |
 | `skill` | Not ported | |
@@ -69,7 +69,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `sdk` | Partial | Line-delimited JSON-RPC over stdio: `run`, `sessions.list`, `sessions.show`, `tools.list`, `config`. |
 | `host`, `client` | Partial | Browser client with HTML, JSON session routes, and POST SSE runs. Desktop is out of scope. |
 | `mcp` | Ported shape | Stdio JSON-RPC client, tool discovery, and `mcp_<server>_<tool>` registration. |
-| `experimental` | Not ported | |
+| `experimental` | Partial | `create_worktree` creates a branch and checkout under `.worktrees/`. No browser-use, computer-use, agent-team external providers, or runtime self-modification. |
 | `test-support` | Inline | Mocks live beside their tests. |
 | `util` | Inline | Zero-dependency helpers moved to the owning crate. |
 | `apps/cli` | Replaced | `dsh-cli`. |
@@ -115,6 +115,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | 2026-11-02 | Images are inline base64 content blocks | `read_image` attaches the pixels beside a caption, and the Messages serializer maps the block to an inline `image` source. No Files API or image offload in this pass. |
 | 2026-11-02 | Sandbox is a command resolver, not a second tool path | `bash` asks the configured provider for a program and arguments, so confinement changes the process it spawns without changing the tool contract. Bubblewrap gets a read-only root and a writable session directory. |
 | 2026-11-02 | Team state is one JSON file plus in-process tasks | The roster and tasks must survive a restart; live joins must not. One locked state and one atomic file keep the seven tools consistent without a second database. |
+| 2026-11-02 | Git tools wrap the real `git` executable | A patch applier and worktree manager are security-sensitive and already maintained. The tools validate refs and paths at the boundary, then delegate to `git` rather than reimplementing object storage. |
 | 2026-11-02 | Jobs use a durable directory, not in-memory handles | A job must survive the process that started it. Pid, output, and status files make listing and output reads independent of the agent. |
 | 2026-11-02 | MCP tools are prefixed with the server name | Two servers can expose the same tool name; the registry rejects duplicates. The prefix keeps both available. |
 | 2026-11-02 | The web run is a POST SSE stream | `EventSource` only supports GET. A POST stream lets the browser send the task and consume frames from one request. |

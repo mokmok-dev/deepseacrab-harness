@@ -10,10 +10,10 @@ The headless product works end to end. A task can be submitted from the CLI, the
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 699 tests passed.
+- `cargo test --workspace`: 705 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The fifteen crates produced 886 caught viable mutants and 309 unviable mutants.
+- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The fifteen crates produced 900 caught viable mutants and 313 unviable mutants.
 - `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
 
 ## Quick start
@@ -128,7 +128,7 @@ The workspace is fifteen crates. Dependencies point downward only.
 
 The full design is in [docs/architecture.md](docs/architecture.md). The upstream coverage table and the deliberate omissions are in [docs/rewrite-scope.md](docs/rewrite-scope.md).
 
-The model-facing registry contains 38 first-party tools in a run: `bash`, `read_file`, `read_image`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, `ralph`, `spawn_teammate`, `list_agents`, `send_message`, `wait_agent`, `team_task_create`, `team_task_list`, `team_task_update`, `job_start`, `job_list`, `job_output`, `job_kill`, `schedule_create`, `schedule_list`, `schedule_cancel`, `terminal_open`, `terminal_read`, `terminal_write`, and `terminal_close`. `dsh tools` lists the 28 statically composed tools; the delegation and team tools are added with their runtime seams. An `lsp` tool appears when `DSH_LSP_SERVERS` configures language servers, and MCP servers add one tool per remote declaration.
+The model-facing registry contains 40 first-party tools in a run: `apply_patch`, `bash`, `read_file`, `read_image`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `create_worktree`, `subagent`, `workflow`, `ralph`, `spawn_teammate`, `list_agents`, `send_message`, `wait_agent`, `team_task_create`, `team_task_list`, `team_task_update`, `job_start`, `job_list`, `job_output`, `job_kill`, `schedule_create`, `schedule_list`, `schedule_cancel`, `terminal_open`, `terminal_read`, `terminal_write`, and `terminal_close`. `dsh tools` lists the 30 statically composed tools; the delegation and team tools are added with their runtime seams. An `lsp` tool appears when `DSH_LSP_SERVERS` configures language servers, and MCP servers add one tool per remote declaration.
 
 ## Safety
 

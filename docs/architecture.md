@@ -93,7 +93,7 @@ Compaction runs before each step. When estimated history characters exceed `max_
 
 The seven built-ins are `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, and `web_fetch`.
 
-The full first-party surface adds `read_image`, `str_replace_editor`, `glob`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `workflow`, `ralph`, the seven team tools, the four `job_*` tools, the three `schedule_*` tools, and the four `terminal_*` tools. Session-owned tools append their facts through `ToolContext::session`. The loop reads the latest `working_directory_changed` fact before each step, so a directory change applies to later steps without mutating the current batch.
+The full first-party surface adds `apply_patch`, `read_image`, `str_replace_editor`, `glob`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `create_worktree`, `subagent`, `workflow`, `ralph`, the seven team tools, the four `job_*` tools, the three `schedule_*` tools, and the four `terminal_*` tools. Session-owned tools append their facts through `ToolContext::session`. The loop reads the latest `working_directory_changed` fact before each step, so a directory change applies to later steps without mutating the current batch.
 
 `subagent` builds a child `AgentLoop` from the same store, provider, and tool registry, removes itself and `workflow` from the child registry, records the parent session on the child header, and returns the child's final text. `workflow` runs an ordered list of child sessions, stops after a failed step by default, and reports one line per settled step. A child cannot spawn another child through the same tools.
 
@@ -110,6 +110,8 @@ Set `DSH_SANDBOX=bubblewrap` to route `bash` through `dsh-sandbox`. The provider
 `dsh-lsp` starts each configured language server with Content-Length framed JSON-RPC. It completes the initialize handshake, re-sends `textDocument/didOpen` for each query, and routes `hover`, `definition`, `references`, and `symbols` to the first server whose extension list matches the file. Locations render as `path:line:character`; symbol names render as an indented tree. A server that never answers is cut off after a bounded number of unmatched frames.
 
 `read_image` reads a PNG, JPEG, WebP, or GIF up to 10 MiB, base64-encodes it, and returns an image content block beside a caption. The Messages serializer maps that block to an inline `image` source, so the next request carries the pixels.
+
+`apply_patch` pipes a unified diff to `git apply` in the session directory. `create_worktree` runs `git worktree add` for a validated branch under `.worktrees/<branch>`, then appends a `working_directory_changed` fact so later steps execute in the new checkout.
 
 `job_*` writes a small job directory under the session workspace. `job_start` redirects the child's streams to files, records the pid, and a waiter thread publishes an atomic status file. `job_list`, `job_output`, and `job_kill` read that durable state.
 
@@ -165,4 +167,4 @@ Unit tests sit beside the code they exercise. Integration tests in `dsh-cli/test
 
 Property tests cover the shapes where examples are weak: event round-trips, projection order, SSE chunk splitting, retry delays, path normalization, edit semantics, and batch plans.
 
-`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across fifteen crates, with 886 caught and 309 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.
+`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across fifteen crates, with 900 caught and 313 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.
