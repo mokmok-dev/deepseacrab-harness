@@ -6,14 +6,15 @@ The binary is `dsh`.
 
 ## Status
 
-The headless product works end to end. A task can be submitted from the CLI, streamed from the DeepSeek Messages API, executed through built-in tools, and persisted to SQLite. Sessions can be resumed and inspected.
+The headless product works end to end. A task can be submitted from the CLI, the browser client, or the JSON-RPC SDK, streamed from the DeepSeek Messages API, executed through built-in and MCP tools, and persisted to SQLite. Sessions can be resumed, forked, searched, exported, and inspected.
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 291 tests passed.
+- `cargo test --workspace`: 486 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants --workspace`: 0 missed mutants. The six crates produced 395 caught viable mutants and 108 unviable mutants.
+- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The ten crates produced 619 caught viable mutants and 209 unviable mutants.
+- `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
 
 ## Quick start
 
@@ -42,6 +43,19 @@ cargo run -p dsh-cli --bin dsh -- config
 cargo run -p dsh-cli --bin dsh -- tools
 ```
 
+Open the browser client:
+
+```sh
+cargo run -p dsh-cli --bin dsh -- web
+# http://127.0.0.1:3080
+```
+
+Serve the JSON-RPC SDK on stdio:
+
+```sh
+cargo run -p dsh-cli --bin dsh -- sdk
+```
+
 ## Commands
 
 | Command | Behavior |
@@ -55,8 +69,14 @@ cargo run -p dsh-cli --bin dsh -- tools
 | `dsh run --max-steps <n>` | Bound the steps in one turn. |
 | `dsh sessions list` | List stored sessions. |
 | `dsh sessions show <id>` | Print one session's durable event log. |
+| `dsh sessions fork <source> <target>` | Copy a session prefix into a new session. |
+| `dsh sessions export <id>` | Export a session as NDJSON. |
+| `dsh sessions search <query>` | Search durable event payloads. |
+| `dsh sessions repair <id>` | Seal a turn left open by a process loss. |
 | `dsh tools` | List the model-facing tool registry. |
 | `dsh config` | Print effective configuration without secrets. |
+| `dsh web` | Serve the browser client on `127.0.0.1:3080`. |
+| `dsh sdk` | Serve the JSON-RPC SDK on stdio. |
 
 Exit code `0` means the turn completed. `1` means the turn failed, was cancelled, or hit its step limit. Clap usage errors exit `2`.
 
@@ -71,6 +91,10 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 | `DSH_MAX_TOKENS` | `8192` | Per-request output cap. |
 | `DSH_MAX_STEPS` | `24` | Step budget for one turn. |
 | `DSH_MAX_PARALLEL_TOOLS` | `4` | Concurrent concurrency-safe tools. |
+| `DSH_MAX_RETRIES` | `2` | Retryable provider failures retried per step. |
+| `DSH_RETRY_BASE_MS` | `500` | Base delay for exponential retry backoff. |
+| `DSH_MAX_CONTEXT_CHARS` | `200000` | Estimated history size that triggers compaction. |
+| `DSH_MCP_SERVERS` | none | JSON array of MCP stdio server configurations. |
 | `DSH_REASONING_EFFORT` | `high` | `off`, `low`, `high`, or `max`. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | Tool permission mode. |
 | `DSH_HOME` | platform data directory | Session database and harness state. |
@@ -78,18 +102,24 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 
 ## Architecture
 
-The workspace is six crates. Dependencies point downward only.
+The workspace is ten crates. Dependencies point downward only.
 
 | Crate | Owns |
 |---|---|
 | `dsh-core` | Domain types, capability traits, permission policy, plugin host. |
 | `dsh-session` | SQLite append-only session store. |
 | `dsh-llm` | DeepSeek Messages adapter, SSE framing, request translation, retry policy. |
-| `dsh-tools` | Seven model-facing tools and their plugin. |
-| `dsh-agent` | Turn and step driver, streaming assembly, tool batching. |
+| `dsh-tools` | Model-facing tools and their plugin. |
+| `dsh-jobs` | Background shell job tools. |
+| `dsh-mcp` | MCP stdio client that registers external tools. |
+| `dsh-agent` | Turn and step driver, streaming assembly, tool batching, subagents. |
+| `dsh-web` | Browser client with JSON and SSE routes. |
+| `dsh-sdk` | Line-delimited JSON-RPC SDK. |
 | `dsh-cli` | `clap` command grammar, plugin composition root, output projection. |
 
 The full design is in [docs/architecture.md](docs/architecture.md). The upstream coverage table and the deliberate omissions are in [docs/rewrite-scope.md](docs/rewrite-scope.md).
+
+The model-facing registry contains 21 first-party tools in a run: `bash`, `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`, `web_fetch`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, `job_start`, `job_list`, `job_output`, and `job_kill`. `dsh tools` lists the 20 statically composed tools; `subagent` is added with its child-session seams at run time. MCP servers add one tool per remote declaration.
 
 ## Safety
 

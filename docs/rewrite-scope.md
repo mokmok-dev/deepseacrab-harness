@@ -15,13 +15,23 @@ The pass is complete when all of the following hold:
 
 All six are verified. See the root README for the measured counts.
 
+## Milestone status
+
+- **M1, foundation: complete.** Session header, fork, export, search, and repair; bounded retry; durable compaction; todo, plan, goal, working-directory, and session-search tools; `glob`, `str_replace_editor`, and `skill`.
+- **M2, delegation and work: partial.** `subagent` and the four `job_*` tools are in. Workflows, schedules, agent teams, and the Ralph loop are not.
+- **M3, integrations and execution: partial.** MCP stdio and `web_search` are in. LSP, persistent PTY, SSH, OS sandboxing, image input, and browser or computer use are not.
+- **M4, surfaces and distribution: partial.** The browser client and the JSON-RPC SDK are in. ACP, the API/BFF, plugin manager and market, stored credentials, telemetry, and i18n are not.
+- **M5, hardening: pending.** Cross-platform checks, session-format migrations, performance gates, and the remaining snapshot matrix are not done.
+
+The mutation gate is green across all ten crates: 619 caught viable mutants, 209 unviable mutants, and 0 missed or timed out.
+
 ## Upstream coverage
 
 | Upstream group | Status in this rewrite | Notes |
 |---|---|---|
-| `core/session` | Ported shape | SQLite instead of JSONL generations. Append-only facts and projection are preserved. |
-| `core/agent`, `core/agent-loop` | Ported subset | Turn/step loop, streaming assembly, cancellation, step budget. No inbox projection, no retries, no goal/plan interaction. |
-| `core/tools` | Ported shape | Name-keyed registry, schema admission, guarded execution, ordered results, concurrency flag. No post-execute waterfall or presentation layer. |
+| `core/session` | Ported shape | SQLite instead of JSONL generations. Append-only facts, projection, fork, export, search, repair, and header reads are preserved. |
+| `core/agent`, `core/agent-loop` | Ported subset | Turn/step loop, streaming assembly, cancellation, bounded retry, compaction, subagents, step budget. No inbox projection, goal continuation, or plan approval flow. |
+| `core/tools` | Ported shape | Name-keyed registry, schema admission, guarded execution, ordered results, concurrency flag, session-owned facts. No post-execute waterfall or presentation layer. |
 | `core/system-prompt` | Simplified | One configured instruction block. No section registry or per-agent prompt composition. |
 | `core/scope` | Not ported | One agent per process run. Scope keys and shadowing have no consumer yet. |
 | `llm/llm` | Ported seam | Provider-neutral request/stream vocabulary and `LlmProvider`. |
@@ -32,15 +42,15 @@ All six are verified. See the root README for the measured counts.
 | `ssh`, `terminal` | Not ported | No remote execution or PTY. |
 | `ptc-runtime` | Not ported | No programmatic tool calling. |
 | `sandbox` | Partial | Permission modes and lexical path policy. No OS-level confinement. |
-| `fs/fs-local`, `tool-fs`, `tool-fs-search`, `tool-str-replace-editor` | Ported subset | `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`. No patch format, observation policy, or LSP-guided edits. |
-| `web/tool-web` | Partial | `web_fetch` only. No search provider. |
+| `fs/fs-local`, `tool-fs`, `tool-fs-search`, `tool-str-replace-editor` | Ported subset | `read_file`, `write_file`, `edit_file`, `str_replace_editor`, `list_dir`, `glob`, `grep`. No patch format, observation policy, or LSP-guided edits. |
+| `web/tool-web` | Partial | `web_fetch` and `web_search`. No alternate search provider. |
 | `lsp` | Not ported | |
 | `skill` | Not ported | |
 | `computer-use`, `browser-use` | Not ported | |
 | `compaction` | Not ported | History grows until the provider limit. |
 | `context` | Partial | Session working directory only. |
 | `subagent` | Not ported | |
-| `jobs` | Not ported | |
+| `jobs` | Ported | `job_start`, `job_list`, `job_output`, `job_kill` over a durable job directory. |
 | `bundle` | Replaced | The CLI composes `Plugin` values directly. |
 | `workflow`, `todo`, `plan`, `goal`, `schedule`, `preset`, `guard` | Not ported | `max_steps` is the only loop guard. |
 | `extensions` | Not ported | Runtime self-modification would require a dynamic loader. |
@@ -51,14 +61,15 @@ All six are verified. See the root README for the measured counts.
 | `feedback`, `identity`, `settings`, `credentials` | Partial | Environment configuration and one credential variable. |
 | `acp` | Not ported | |
 | `interaction`, `boot` | Replaced | CLI interaction and composition root. |
-| `sdk` | Not ported | |
-| `host`, `client` | Not ported | Desktop and browser surfaces. |
-| `mcp` | Not ported | |
+| `sdk` | Partial | Line-delimited JSON-RPC over stdio: `run`, `sessions.list`, `sessions.show`, `tools.list`, `config`. |
+| `host`, `client` | Partial | Browser client with HTML, JSON session routes, and POST SSE runs. Desktop is out of scope. |
+| `mcp` | Ported shape | Stdio JSON-RPC client, tool discovery, and `mcp_<server>_<tool>` registration. |
 | `experimental` | Not ported | |
 | `test-support` | Inline | Mocks live beside their tests. |
 | `util` | Inline | Zero-dependency helpers moved to the owning crate. |
 | `apps/cli` | Replaced | `dsh-cli`. |
-| `apps/desktop`, `apps/desktop-host`, `apps/web`, `apps/plugin-market-generator` | Out of scope | Explicitly excluded by the request. |
+| `apps/web` | Ported minimal | `dsh-web` serves the page, session routes, and POST SSE runs. |
+| `apps/desktop`, `apps/desktop-host`, `apps/plugin-market-generator` | Out of scope | Desktop is explicitly excluded; the plugin market is not ported. |
 | `python/` | Out of scope | SDK and runtime. |
 
 ## Fidelity decisions
@@ -87,6 +98,15 @@ All six are verified. See the root README for the measured counts.
 | 2026-11-02 | Tool batching by explicit concurrency flag | Parallel calls must not reorder results. A pure batch plan and index-keyed writeback make order a testable invariant. |
 | 2026-11-02 | Mutation testing on every crate | The request requires 100% killed mutants. The first runs exposed missing observations in config, messages, tool context, event emission, and SSE progress. Tests were added; no mutant was excluded. |
 | 2026-11-02 | End-to-end CLI test against a local SSE server | A unit test of the adapter would not prove `clap`, config, plugin composition, SQLite, and output projection work together. The test runs the real binary. |
+| 2026-11-02 | Session admin stays on `SessionStore` | Fork, export, search, repair, and header reads all need the same connection and transaction. Default trait methods keep mock stores small. |
+| 2026-11-02 | Retry is bounded by a `for` loop | A guard-only loop could retry forever if a mutation or a bug removed the attempt bound. The loop bound is structural. |
+| 2026-11-02 | Compaction keeps the current turn by sequence | A summary event appended after the current user message would otherwise erase it. `keep_from` retains facts at or after the turn's first user fact. |
+| 2026-11-02 | Subagents build a child loop without the subagent tool | The child registry is a clone taken before the tool inserts itself, so delegation depth is bounded by construction. |
+| 2026-11-02 | Jobs use a durable directory, not in-memory handles | A job must survive the process that started it. Pid, output, and status files make listing and output reads independent of the agent. |
+| 2026-11-02 | MCP tools are prefixed with the server name | Two servers can expose the same tool name; the registry rejects duplicates. The prefix keeps both available. |
+| 2026-11-02 | The web run is a POST SSE stream | `EventSource` only supports GET. A POST stream lets the browser send the task and consume frames from one request. |
+| 2026-11-02 | The SDK owns generic IO, the CLI owns stdio | `serve_io` is testable over byte buffers. The process stdio boundary stays in the CLI, where it belongs. |
+| 2026-11-02 | Mutation gate rerun after every slice | New behavior repeatedly exposed missing observations in retry bounds, compaction boundaries, tool size limits, and process status. Tests were added; no exclusion was used. |
 
 ## Next slices
 

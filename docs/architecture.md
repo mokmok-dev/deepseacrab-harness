@@ -11,7 +11,11 @@ dsh-cli
   │     └── dsh-core traits
   ├── dsh-llm      -> dsh-core
   ├── dsh-session  -> dsh-core
-  └── dsh-tools    -> dsh-core
+  ├── dsh-tools    -> dsh-core
+  ├── dsh-jobs     -> dsh-core
+  ├── dsh-mcp      -> dsh-core
+  ├── dsh-web      -> dsh-agent, dsh-core
+  └── dsh-sdk      -> dsh-agent, dsh-core
 ```
 
 No adapter crate depends on another adapter. The agent depends only on the traits in `dsh-core`, so a test provider, an in-memory store, and a fake tool can drive the full turn machine without a network or a filesystem.
@@ -54,6 +58,8 @@ events(session_id, seq, at, kind, payload, PRIMARY KEY(session_id, seq))
 
 The store is synchronous. SQLite on a local disk is fast enough that an async wrapper would add a task boundary and a cancellation hole without buying throughput. The store is behind a `Mutex<Connection>`, so the sequence assignment is serialized.
 
+The admin surface sits on the same trait: `header` reads one session row, `fork` copies a prefix into a new session with the source as its parent, `export` emits one JSON record per line, `search` matches event payloads with a bounded escaped `LIKE`, and `repair` seals the last open turn with an `INTERRUPTED` failure. The CLI exposes each as a `sessions` subcommand.
+
 ## Agent loop
 
 One turn admits a user message, then runs model steps:
@@ -72,11 +78,21 @@ Cancellation is cooperative. The token reaches the provider stream and every `To
 
 A provider or assembly failure closes the turn with `TurnOutcome::Failed` and the machine code. The turn is still durable; the CLI exits `1`.
 
+Retry is bounded by the `for attempt in 0..=max_retries` loop. A retryable failure appends `retry_attempt`, emits a live retry frame, and waits for a capped exponential delay. A non-retryable failure closes the turn immediately. The loop cannot retry forever because the iteration bound is structural.
+
+Compaction runs before each step. When estimated history characters exceed `max_context_chars`, the loop summarizes every message before the current turn's first user message, appends a `compaction` fact with `keep_from` set to that message's sequence, and rebuilds history. `derive_messages` inserts the summary and retains only facts at or after `keep_from`, so the current turn is never summarized away.
+
 ## Tool pipeline
 
 `Tool` owns a schema, an async body, and a concurrency flag. `Tool::run` is the loop's entry point. It parses the raw JSON arguments, rejects non-objects, and contains panics as a tool error. `execute` sees typed `serde_json::Value` and returns `ToolOutcome`.
 
 The seven built-ins are `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, and `web_fetch`.
+
+The full first-party surface adds `str_replace_editor`, `glob`, `web_search`, `todo_write`, `update_plan`, `create_goal`, `working_directory`, `session_search`, `skill`, `subagent`, and the four `job_*` tools. Session-owned tools append their facts through `ToolContext::session`. The loop reads the latest `working_directory_changed` fact before each step, so a directory change applies to later steps without mutating the current batch.
+
+`subagent` builds a child `AgentLoop` from the same store, provider, and tool registry, removes itself from the child registry, records the parent session on the child header, and returns the child's final text. A child cannot spawn another child through the same tool.
+
+`job_*` writes a small job directory under the session workspace. `job_start` redirects the child's streams to files, records the pid, and a waiter thread publishes an atomic status file. `job_list`, `job_output`, and `job_kill` read that durable state.
 
 Path policy lives in `dsh-core`:
 
@@ -112,10 +128,22 @@ The adapter rejects cancellation by returning a transport error, which the loop 
 
 Configuration parsing is pure through `Config::from_lookup`; the process environment is read only in the CLI boundary adapter. This keeps tests independent of process state.
 
+## External tools
+
+`dsh-mcp` speaks newline-delimited JSON-RPC 2.0 to stdio servers. `ProcessConnection` owns the child process and one request id sequence behind a mutex. `McpPlugin` reads `DSH_MCP_SERVERS`, starts each server, lists its tools, and registers one `McpTool` per declaration under `mcp_<server>_<tool>`. The tool forwards the original name and preserves the server's `isError` flag. Blocking protocol work runs on `spawn_blocking`.
+
+`web_search` uses the DuckDuckGo HTML endpoint. The parser is pure and tested against a fixture; the HTTP request is thin glue. `web_fetch` and `web_search` refuse read-only mode.
+
+## Surfaces
+
+`dsh-web` serves one axum router with the HTML page, `GET /api/health`, `GET /api/sessions`, `GET /api/sessions/{id}`, `GET /api/tools`, and `POST /api/run`. A run is a POST SSE stream. The page reads the response body with `fetch` and a stream reader, appends text and tool frames to the transcript, and refreshes the session list. The router is exercised with `tower::ServiceExt::oneshot`, and the CLI was exercised over a real socket against a local SSE provider.
+
+`dsh-sdk` reads one JSON-RPC request per line from any async reader and writes one frame per line to any async writer. `run` emits an `event` notification per `RunEvent` and settles with `{session_id, outcome, text}`. It also serves `sessions.list`, `sessions.show`, `tools.list`, and `config`. `serve_io` is generic over the reader and writer; the CLI owns the process stdio boundary.
+
 ## Testing and mutation
 
 Unit tests sit beside the code they exercise. Integration tests in `dsh-cli/tests/cli.rs` run the real binary against a local TCP server that emits a recorded SSE response. That covers `clap`, configuration, plugin composition, SQLite, the Messages request, SSE translation, assembly, the agent loop, and output projection in one path.
 
 Property tests cover the shapes where examples are weak: event round-trips, projection order, SSE chunk splitting, retry delays, path normalization, edit semantics, and batch plans.
 
-`cargo-mutants` runs on every crate. The measured result is 0 missed. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.
+`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across ten crates, with 619 caught and 209 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.
