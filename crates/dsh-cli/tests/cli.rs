@@ -140,6 +140,21 @@ fn run_without_a_key_fails_loudly() {
 }
 
 #[test]
+fn web_and_sdk_without_a_key_fail_loudly() {
+    for command in [vec!["web"], vec!["sdk"]] {
+        let home = fresh_home();
+        dsh()
+            .env("DSH_HOME", home.path())
+            .env_remove("DEEPSEEK_API_KEY")
+            .env_remove("DEEPSEEK_BASE_URL")
+            .args(command)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("MISSING_CREDENTIAL"));
+    }
+}
+
+#[test]
 fn empty_tasks_are_rejected_before_model_work() {
     let home = fresh_home();
     dsh()
@@ -264,4 +279,63 @@ fn run_persists_the_session_for_later_inspection() {
         .stdout(predicate::str::contains("user_message"))
         .stdout(predicate::str::contains("assistant_message"))
         .stdout(predicate::str::contains("turn_ended"));
+}
+
+#[test]
+fn session_admin_commands_round_trip() {
+    let (port, server) = spawn_sse_server();
+    let home = fresh_home();
+    let cwd = tempfile::tempdir().expect("temporary cwd");
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env("DEEPSEEK_API_KEY", "test-key")
+        .env("DEEPSEEK_BASE_URL", format!("http://127.0.0.1:{port}"))
+        .env("DSH_MAX_STEPS", "1")
+        .args([
+            "run",
+            "--session-id",
+            "session-admin",
+            "--cwd",
+            cwd.path().to_str().expect("utf-8 cwd"),
+            "say hello",
+        ])
+        .assert()
+        .success();
+    server.join().expect("sse server");
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["sessions", "export", "session-admin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("user_message"))
+        .stdout(predicate::str::contains("assistant_message"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["sessions", "search", "say hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("session-admin"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["sessions", "fork", "session-admin", "session-admin-copy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("session-admin-copy"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["sessions", "show", "session-admin-copy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("user_message"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["sessions", "repair", "session-admin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nothing to repair"));
 }

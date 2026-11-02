@@ -1,0 +1,27 @@
+[package]
+name = "dsh-web"
+description = "Browser client for the DeepSeek Harness Rust rewrite"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+axum.workspace = true
+dsh-agent.workspace = true
+dsh-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+http-body-util.workspace = true
+proptest.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

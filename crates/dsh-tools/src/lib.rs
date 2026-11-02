@@ -1,5 +1,9 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
-#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::format_push_string
+)]
 
 //! Built-in model-facing tools and the plugin that registers them.
 //!
@@ -9,12 +13,18 @@
 //! can always settle the matching tool result.
 
 mod editing;
+mod glob;
 mod http;
 mod input;
 mod listing;
 mod reading;
 mod searching;
+mod session_tools;
 mod shell;
+mod skill;
+mod str_replace;
+mod web_search;
+mod working_directory;
 mod writing;
 
 #[cfg(test)]
@@ -39,7 +49,7 @@ impl Plugin for ToolsPlugin {
     }
 }
 
-/// Build a registry holding the seven built-in tools.
+/// Build a registry holding every built-in tool.
 pub fn default_registry() -> Result<ToolRegistry, ToolRegistryError> {
     let mut registry = ToolRegistry::new();
     for tool in builtin_tools() {
@@ -51,11 +61,20 @@ pub fn default_registry() -> Result<ToolRegistry, ToolRegistryError> {
 fn builtin_tools() -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(shell::BashTool),
+        Arc::new(session_tools::GoalTool),
         Arc::new(editing::EditFileTool),
+        Arc::new(glob::GlobTool),
         Arc::new(searching::GrepTool),
         Arc::new(listing::ListDirTool),
         Arc::new(reading::ReadFileTool),
+        Arc::new(session_tools::SessionSearchTool),
+        Arc::new(skill::SkillTool),
+        Arc::new(str_replace::StrReplaceEditorTool),
+        Arc::new(session_tools::TodoWriteTool),
+        Arc::new(session_tools::PlanTool),
         Arc::new(http::WebFetchTool),
+        Arc::new(web_search::WebSearchTool::default()),
+        Arc::new(working_directory::WorkingDirectoryTool),
         Arc::new(writing::WriteFileTool),
     ]
 }
@@ -75,11 +94,20 @@ mod tests {
     fn expected_names() -> Vec<String> {
         [
             "bash",
+            "create_goal",
             "edit_file",
+            "glob",
             "grep",
             "list_dir",
             "read_file",
+            "session_search",
+            "skill",
+            "str_replace_editor",
+            "todo_write",
+            "update_plan",
             "web_fetch",
+            "web_search",
+            "working_directory",
             "write_file",
         ]
         .map(str::to_string)
@@ -175,7 +203,7 @@ mod tests {
     #[test]
     fn default_registry_holds_every_builtin_tool() {
         let registry = default_registry().expect("registry");
-        assert_eq!(registry.len(), 7);
+        assert_eq!(registry.len(), expected_names().len());
         assert_eq!(registry.names(), expected_names());
     }
 

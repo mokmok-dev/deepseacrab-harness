@@ -1,7 +1,10 @@
 //! The tool seam: schemas shown to the model and execution behind one call.
 
+use crate::event::{EventRecord, SessionEvent};
+use crate::ids::SessionId;
 use crate::message::ContentBlock;
 use crate::permission::{PathError, ensure_within};
+use crate::store::StoreError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -82,8 +85,29 @@ impl ToolSchema {
     }
 }
 
+/// Durable session access available to session-owned tools.
+pub trait ToolSession: Send + Sync {
+    /// Session receiving the tool's facts.
+    fn session_id(&self) -> &SessionId;
+
+    /// Append one durable fact.
+    fn append(&self, event: SessionEvent) -> Result<EventRecord, StoreError>;
+
+    /// Current wall clock in Unix epoch milliseconds.
+    fn now_millis(&self) -> i64;
+
+    /// Search durable event payloads.
+    fn search(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::session::SessionSearchHit>, StoreError> {
+        Err(StoreError::Unsupported("session search".to_string()))
+    }
+}
+
 /// Everything one tool invocation may observe and use.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolContext {
     /// Physical session working directory.
     pub cwd: PathBuf,
@@ -91,6 +115,8 @@ pub struct ToolContext {
     pub permission: PermissionMode,
     /// Cancellation propagated to the tool body.
     pub cancel: CancellationToken,
+    /// Durable session access for session-owned tools.
+    pub session: Option<Arc<dyn ToolSession>>,
 }
 
 impl ToolContext {
@@ -101,7 +127,21 @@ impl ToolContext {
             cwd,
             permission,
             cancel,
+            session: None,
         }
+    }
+
+    /// Attach the durable session handle.
+    #[must_use]
+    pub fn with_session(mut self, session: Arc<dyn ToolSession>) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// The durable session handle, when one was attached.
+    #[must_use]
+    pub fn session(&self) -> Option<&Arc<dyn ToolSession>> {
+        self.session.as_ref()
     }
 
     /// Resolve a path and enforce the session's write policy.
@@ -328,6 +368,7 @@ impl Tool for EchoTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::EventSeq;
     use proptest::prelude::*;
     use std::path::Path;
 
@@ -477,6 +518,58 @@ mod tests {
         }
         assert!(!PlainTool.concurrency_safe());
         assert!(SafeTool.concurrency_safe());
+    }
+
+    #[test]
+    fn session_handles_attach_to_tool_contexts() {
+        struct MockSession {
+            id: SessionId,
+            events: std::sync::Mutex<Vec<SessionEvent>>,
+        }
+        impl ToolSession for MockSession {
+            fn session_id(&self) -> &SessionId {
+                &self.id
+            }
+            fn append(&self, event: SessionEvent) -> Result<EventRecord, StoreError> {
+                self.events.lock().expect("events").push(event.clone());
+                Ok(EventRecord {
+                    seq: EventSeq::new(0),
+                    at: 1,
+                    event,
+                })
+            }
+            fn now_millis(&self) -> i64 {
+                1
+            }
+        }
+        let session = Arc::new(MockSession {
+            id: SessionId::generate(),
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let context = ToolContext::new(
+            PathBuf::from("/work"),
+            PermissionMode::WorkspaceWrite,
+            CancellationToken::new(),
+        )
+        .with_session(session.clone());
+        assert_eq!(
+            context.session().expect("session").session_id(),
+            &session.id
+        );
+        assert_eq!(context.session().expect("session").now_millis(), 1);
+        assert_eq!(
+            context.session().expect("session").search("query", 1),
+            Err(StoreError::Unsupported("session search".to_string()))
+        );
+        let event = SessionEvent::WorkingDirectoryChanged {
+            cwd: "/work".to_string(),
+        };
+        context
+            .session()
+            .expect("session")
+            .append(event.clone())
+            .expect("append");
+        assert_eq!(*session.events.lock().expect("events"), vec![event]);
     }
 
     #[test]

@@ -1,6 +1,6 @@
-use dsh_core::event::{EventRecord, SessionEvent};
+use dsh_core::event::{EventRecord, SessionEvent, TurnOutcome};
 use dsh_core::ids::{EventSeq, SessionId};
-use dsh_core::session::{SESSION_FORMAT_VERSION, SessionHeader, SessionSummary};
+use dsh_core::session::{SESSION_FORMAT_VERSION, SessionHeader, SessionSearchHit, SessionSummary};
 use dsh_core::store::{SessionStore, StoreError};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
@@ -110,6 +110,31 @@ impl SessionStore for SqliteSessionStore {
     fn delete(&self, session_id: &SessionId) -> Result<bool, StoreError> {
         let connection = self.lock()?;
         delete_session(&connection, session_id)
+    }
+
+    fn header(&self, session_id: &SessionId) -> Result<SessionHeader, StoreError> {
+        let connection = self.lock()?;
+        read_header(&connection, session_id)
+    }
+
+    fn fork(
+        &self,
+        source: &SessionId,
+        target: &SessionHeader,
+        through: EventSeq,
+    ) -> Result<(), StoreError> {
+        let connection = self.lock()?;
+        fork_session(&connection, source, target, through)
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<SessionSearchHit>, StoreError> {
+        let connection = self.lock()?;
+        search_events(&connection, query, limit)
+    }
+
+    fn repair(&self, session_id: &SessionId, at: i64) -> Result<bool, StoreError> {
+        let connection = self.lock()?;
+        repair_session(&connection, session_id, at)
     }
 }
 
@@ -292,6 +317,46 @@ fn session_exists(connection: &Connection, session_id: &SessionId) -> Result<boo
         .map_err(backend)
 }
 
+fn read_header(
+    connection: &Connection,
+    session_id: &SessionId,
+) -> Result<SessionHeader, StoreError> {
+    let row = connection
+        .query_row(
+            "SELECT created_at, cwd, parent_session, title, format_version \
+             FROM sessions WHERE id = ?1",
+            [session_id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((created_at, cwd, parent_session, title, format_version)) = row else {
+        return Err(StoreError::NotFound(session_id.clone()));
+    };
+    let parent_session = parent_session
+        .map(SessionId::parse)
+        .transpose()
+        .map_err(|error| StoreError::Encoding(error.to_string()))?;
+    let format_version = u32::try_from(format_version)
+        .map_err(|_| StoreError::Encoding("format version is out of range".to_string()))?;
+    Ok(SessionHeader {
+        id: session_id.clone(),
+        created_at,
+        cwd,
+        parent_session,
+        title,
+        format_version,
+    })
+}
+
 fn is_duplicate(error: &rusqlite::Error) -> bool {
     matches!(
         error,
@@ -304,6 +369,189 @@ fn sequence(raw: i64) -> Result<EventSeq, StoreError> {
     u64::try_from(raw)
         .map(EventSeq::new)
         .map_err(|_| StoreError::Backend(format!("stored event sequence {raw} is negative")))
+}
+
+fn fork_session(
+    connection: &Connection,
+    source: &SessionId,
+    target: &SessionHeader,
+    through: EventSeq,
+) -> Result<(), StoreError> {
+    if !target.is_current() {
+        return Err(StoreError::UnsupportedVersion(
+            target.id.clone(),
+            target.format_version,
+        ));
+    }
+    let through = i64::try_from(through.get())
+        .map_err(|_| StoreError::Backend("fork sequence is out of range".to_string()))?;
+    let transaction = connection.unchecked_transaction().map_err(backend)?;
+    let version: Option<u32> = transaction
+        .query_row(
+            "SELECT format_version FROM sessions WHERE id = ?1",
+            [source.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some(version) = version else {
+        return Err(StoreError::NotFound(source.clone()));
+    };
+    if version != SESSION_FORMAT_VERSION {
+        return Err(StoreError::UnsupportedVersion(source.clone(), version));
+    }
+    let mut header = target.clone();
+    header.parent_session = Some(source.clone());
+    transaction
+        .execute(
+            "INSERT INTO sessions (id, created_at, cwd, parent_session, title, format_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                header.id.as_str(),
+                header.created_at,
+                header.cwd,
+                header.parent_session.as_ref().map(SessionId::as_str),
+                header.title,
+                i64::from(header.format_version),
+            ],
+        )
+        .map_err(|error| {
+            if is_duplicate(&error) {
+                StoreError::AlreadyExists(header.id.clone())
+            } else {
+                backend(error)
+            }
+        })?;
+    insert_event(
+        &transaction,
+        &header.id,
+        0,
+        header.created_at,
+        &SessionEvent::SessionCreated {
+            cwd: header.cwd.clone(),
+            created_at: header.created_at,
+            format_version: header.format_version,
+        },
+    )?;
+    {
+        let mut statement = transaction
+            .prepare(
+                "SELECT at, payload FROM events \
+                 WHERE session_id = ?1 AND seq > 0 AND seq <= ?2 ORDER BY seq ASC",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![source.as_str(), through], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        let mut next = 1i64;
+        for row in rows {
+            let (at, payload) = row.map_err(backend)?;
+            let event: SessionEvent = serde_json::from_str(&payload)
+                .map_err(|error| StoreError::Encoding(error.to_string()))?;
+            insert_event(&transaction, &header.id, next, at, &event)?;
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| StoreError::Backend("fork sequence overflow".to_string()))?;
+        }
+    }
+    transaction.commit().map_err(backend)
+}
+
+fn search_events(
+    connection: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SessionSearchHit>, StoreError> {
+    if query.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+    let limit = i64::try_from(limit)
+        .map_err(|_| StoreError::Backend("search limit is out of range".to_string()))?;
+    let mut statement = connection
+        .prepare(
+            "SELECT session_id, seq, kind, payload FROM events \
+             WHERE payload LIKE ?1 ESCAPE '\\' ORDER BY session_id ASC, seq ASC LIMIT ?2",
+        )
+        .map_err(backend)?;
+    let rows = statement
+        .query_map(params![pattern, limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut hits = Vec::new();
+    for row in rows {
+        let (session_id, seq, kind, payload) = row.map_err(backend)?;
+        let session_id = SessionId::parse(session_id)
+            .map_err(|error| StoreError::Encoding(error.to_string()))?;
+        hits.push(SessionSearchHit {
+            session_id,
+            seq: sequence(seq)?,
+            kind,
+            snippet: payload.chars().take(200).collect(),
+        });
+    }
+    Ok(hits)
+}
+
+fn repair_session(
+    connection: &Connection,
+    session_id: &SessionId,
+    at: i64,
+) -> Result<bool, StoreError> {
+    let events = load_events(connection, session_id)?;
+    let Some(index) = events
+        .iter()
+        .rposition(|record| matches!(record.event, SessionEvent::TurnStarted { .. }))
+    else {
+        return Ok(false);
+    };
+    let SessionEvent::TurnStarted { turn_id } = &events[index].event else {
+        return Ok(false);
+    };
+    let ended = events.iter().skip(index).any(|record| {
+        matches!(
+            &record.event,
+            SessionEvent::TurnEnded { turn_id: ended, .. } if ended == turn_id
+        )
+    });
+    if ended {
+        return Ok(false);
+    }
+    let transaction = connection.unchecked_transaction().map_err(backend)?;
+    let next: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE session_id = ?1",
+            [session_id.as_str()],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    insert_event(
+        &transaction,
+        session_id,
+        next,
+        at,
+        &SessionEvent::TurnEnded {
+            turn_id: turn_id.clone(),
+            outcome: TurnOutcome::Failed {
+                code: "INTERRUPTED".to_string(),
+                message: "the process ended before the turn settled".to_string(),
+            },
+        },
+    )?;
+    transaction.commit().map_err(backend)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -900,6 +1148,230 @@ mod tests {
                 .expect("message")
                 .id(),
             &message_id
+        );
+    }
+
+    #[test]
+    fn fork_copies_a_prefix_into_a_new_session() {
+        let store = in_memory();
+        let source = new_header();
+        store.create(&source).expect("create");
+        for text in ["one", "two", "three"] {
+            store
+                .append(&source.id, 10, user_message(text))
+                .expect("append");
+        }
+        let target = SessionHeader::new(SessionId::generate(), 20, Some("/fork".to_string()));
+
+        store
+            .fork(&source.id, &target, EventSeq::new(2))
+            .expect("fork");
+
+        let copied = store.load(&target.id).expect("load target");
+        assert_eq!(copied.len(), 3);
+        assert_eq!(copied[0], opening(&target));
+        assert_eq!(copied[1].event.message().expect("message").text(), "one");
+        assert_eq!(copied[2].event.message().expect("message").text(), "two");
+        assert_eq!(store.load(&source.id).expect("source").len(), 4);
+    }
+
+    #[test]
+    fn fork_at_zero_copies_only_the_opening_fact() {
+        let store = in_memory();
+        let source = new_header();
+        store.create(&source).expect("create");
+        store
+            .append(&source.id, 10, user_message("one"))
+            .expect("append");
+        let target = SessionHeader::new(SessionId::generate(), 20, None);
+
+        store
+            .fork(&source.id, &target, EventSeq::new(0))
+            .expect("fork");
+
+        let copied = store.load(&target.id).expect("load target");
+        assert_eq!(copied, vec![opening(&target)]);
+    }
+
+    #[test]
+    fn fork_rejects_missing_sources_and_duplicate_targets() {
+        let store = in_memory();
+        let missing = SessionId::generate();
+        let target = new_header();
+        assert_eq!(
+            store.fork(&missing, &target, EventSeq::new(0)),
+            Err(StoreError::NotFound(missing))
+        );
+
+        let source = new_header();
+        store.create(&source).expect("create");
+        store
+            .fork(&source.id, &target, EventSeq::new(0))
+            .expect("fork");
+        assert_eq!(
+            store.fork(&source.id, &target, EventSeq::new(0)),
+            Err(StoreError::AlreadyExists(target.id.clone()))
+        );
+    }
+
+    #[test]
+    fn fork_rejects_a_future_target_format() {
+        let store = in_memory();
+        let source = new_header();
+        store.create(&source).expect("create");
+        let mut target = SessionHeader::new(SessionId::generate(), 0, None);
+        target.format_version = SESSION_FORMAT_VERSION + 1;
+        assert_eq!(
+            store.fork(&source.id, &target, EventSeq::new(0)),
+            Err(StoreError::UnsupportedVersion(
+                target.id.clone(),
+                SESSION_FORMAT_VERSION + 1
+            ))
+        );
+    }
+
+    #[test]
+    fn export_produces_one_json_record_per_line() {
+        let store = in_memory();
+        let header = new_header();
+        store.create(&header).expect("create");
+        store
+            .append(&header.id, 10, user_message("one"))
+            .expect("append");
+        store
+            .append(&header.id, 20, user_message("two"))
+            .expect("append");
+
+        let exported = store.export(&header.id).expect("export");
+        let lines: Vec<_> = exported.lines().collect();
+        assert_eq!(lines.len(), 3);
+        for line in lines {
+            let record: EventRecord = serde_json::from_str(line).expect("record");
+            assert_ne!(record.event.kind(), "");
+        }
+    }
+
+    #[test]
+    fn search_finds_payload_text_and_respects_limits() {
+        let store = in_memory();
+        let header = new_header();
+        store.create(&header).expect("create");
+        store
+            .append(&header.id, 10, user_message("needle in a haystack"))
+            .expect("append");
+        store
+            .append(&header.id, 20, user_message("something else"))
+            .expect("append");
+
+        let hits = store.search("needle", 10).expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, header.id);
+        assert!(hits[0].snippet.contains("needle"));
+        assert_eq!(store.search("absent", 10).expect("search"), Vec::new());
+        assert_eq!(store.search("", 10).expect("search"), Vec::new());
+        assert_eq!(store.search("needle", 0).expect("search"), Vec::new());
+    }
+
+    #[test]
+    fn repair_seals_an_open_turn_once() {
+        let store = in_memory();
+        let header = new_header();
+        store.create(&header).expect("create");
+        let turn_id = TurnId::generate();
+        store
+            .append(
+                &header.id,
+                10,
+                SessionEvent::TurnStarted {
+                    turn_id: turn_id.clone(),
+                },
+            )
+            .expect("append");
+
+        assert!(store.repair(&header.id, 99).expect("repair"));
+        let events = store.load(&header.id).expect("load");
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[2].event,
+            SessionEvent::TurnEnded {
+                turn_id,
+                outcome: TurnOutcome::Failed {
+                    code: "INTERRUPTED".to_string(),
+                    message: "the process ended before the turn settled".to_string(),
+                },
+            }
+        );
+        assert!(!store.repair(&header.id, 100).expect("second repair"));
+    }
+
+    #[test]
+    fn repair_ignores_settled_or_empty_sessions() {
+        let store = in_memory();
+        let empty = new_header();
+        store.create(&empty).expect("create");
+        assert!(!store.repair(&empty.id, 0).expect("empty repair"));
+
+        let settled = new_header();
+        store.create(&settled).expect("create");
+        let turn_id = TurnId::generate();
+        store
+            .append(
+                &settled.id,
+                1,
+                SessionEvent::TurnStarted {
+                    turn_id: turn_id.clone(),
+                },
+            )
+            .expect("start");
+        store
+            .append(
+                &settled.id,
+                2,
+                SessionEvent::TurnEnded {
+                    turn_id,
+                    outcome: TurnOutcome::Completed,
+                },
+            )
+            .expect("end");
+        assert!(!store.repair(&settled.id, 3).expect("settled repair"));
+    }
+
+    #[test]
+    fn repair_of_an_unknown_session_is_not_found() {
+        let store = in_memory();
+        let session_id = SessionId::generate();
+        assert_eq!(
+            store.repair(&session_id, 0),
+            Err(StoreError::NotFound(session_id))
+        );
+    }
+
+    #[test]
+    fn headers_round_trip_with_lineage() {
+        let store = in_memory();
+        let parent = SessionId::generate();
+        let mut header = new_header();
+        header.parent_session = Some(parent);
+        header.title = Some("title".to_string());
+        store.create(&header).expect("create");
+        assert_eq!(store.header(&header.id).expect("header"), header);
+
+        let target = SessionHeader::new(SessionId::generate(), 2, Some("/fork".to_string()));
+        store
+            .fork(&header.id, &target, EventSeq::new(0))
+            .expect("fork");
+        let forked = store.header(&target.id).expect("forked header");
+        assert_eq!(forked.parent_session, Some(header.id));
+        assert_eq!(forked.cwd.as_deref(), Some("/fork"));
+    }
+
+    #[test]
+    fn headers_of_unknown_sessions_are_not_found() {
+        let store = in_memory();
+        let session_id = SessionId::generate();
+        assert_eq!(
+            store.header(&session_id),
+            Err(StoreError::NotFound(session_id))
         );
     }
 }

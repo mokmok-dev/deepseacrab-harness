@@ -59,6 +59,19 @@ pub struct SessionSummary {
     pub event_count: u64,
 }
 
+/// One event matched by a session text search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSearchHit {
+    /// Session containing the fact.
+    pub session_id: SessionId,
+    /// Position of the fact.
+    pub seq: crate::ids::EventSeq,
+    /// Fact kind.
+    pub kind: String,
+    /// Short excerpt around the match.
+    pub snippet: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

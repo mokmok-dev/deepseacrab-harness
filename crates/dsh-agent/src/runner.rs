@@ -6,12 +6,13 @@ use dsh_core::{
     Clock, EventRecord, LlmError, LlmProvider, LlmRequest, Message, MessageId, ModelId,
     PermissionMode, ProviderId, ReasoningEffort, SessionEvent, SessionHeader, SessionId,
     SessionStore, StepId, StoreError, StreamEvent, TokenUsage, ToolCall, ToolContext, ToolMessage,
-    ToolRegistry, TurnId, TurnOutcome, UserMessage, derive_messages,
+    ToolRegistry, ToolSession, TurnId, TurnOutcome, UserMessage, derive_messages,
 };
 use futures_util::{StreamExt, stream};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -34,6 +35,14 @@ pub struct AgentConfig {
     pub permission: PermissionMode,
     /// Physical session working directory.
     pub cwd: PathBuf,
+    /// Retryable provider failures retried before the turn fails.
+    pub max_retries: u32,
+    /// Base delay for exponential retry backoff.
+    pub retry_base_ms: u64,
+    /// Estimated history characters that trigger compaction.
+    pub max_context_chars: usize,
+    /// Direct creator of a child session.
+    pub parent_session: Option<SessionId>,
 }
 
 impl AgentConfig {
@@ -49,6 +58,10 @@ impl AgentConfig {
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             permission: PermissionMode::WorkspaceWrite,
             cwd,
+            max_retries: 2,
+            retry_base_ms: 500,
+            max_context_chars: 200_000,
+            parent_session: None,
         }
     }
 }
@@ -126,6 +139,13 @@ pub enum RunEvent {
         outcome: TurnOutcome,
         /// Last assistant text.
         text: String,
+    },
+    /// A retryable provider failure scheduled another attempt.
+    Retry {
+        /// One-based attempt number.
+        attempt: u32,
+        /// Machine code of the failure.
+        code: String,
     },
     /// A failure occurred outside a turn.
     Error {
@@ -211,6 +231,11 @@ impl AgentLoop {
         );
 
         let mut messages = derive_messages(&self.store.load(session_id)?);
+        let session_handle: Arc<dyn ToolSession> = Arc::new(SessionHandle {
+            store: Arc::clone(&self.store),
+            session_id: session_id.clone(),
+            clock: Arc::clone(&self.clock),
+        });
         let turn_id = TurnId::generate();
         self.append(
             session_id,
@@ -219,7 +244,7 @@ impl AgentLoop {
             },
         )?;
         let user = UserMessage::text(task);
-        self.append(
+        let turn_start = self.append(
             session_id,
             SessionEvent::UserMessage {
                 message: user.clone(),
@@ -247,12 +272,15 @@ impl AgentLoop {
 
         for _ in 0..self.config.max_steps {
             steps = steps.saturating_add(1);
+            self.maybe_compact(session_id, &mut messages, turn_start.seq)?;
+            let cwd = latest_cwd(&self.store.load(session_id)?)
+                .unwrap_or_else(|| self.config.cwd.clone());
             let step_id = StepId::generate();
             self.append(
                 session_id,
                 SessionEvent::StepStarted {
                     turn_id: turn_id.clone(),
-                    step_id,
+                    step_id: step_id.clone(),
                 },
             )?;
 
@@ -266,13 +294,60 @@ impl AgentLoop {
                 temperature: None,
                 stop: Vec::new(),
             };
-            let mut stream = match self.provider.stream(request, cancel.clone()).await {
-                Ok(stream) => stream,
-                Err(error) => {
-                    return self.fail_turn(
-                        session_id, &turn_id, &error, final_text, usage, steps, &sink,
-                    );
+            let mut stream = None;
+            for attempt in 0..=self.config.max_retries {
+                match self.provider.stream(request.clone(), cancel.clone()).await {
+                    Ok(value) => {
+                        stream = Some(value);
+                        break;
+                    }
+                    Err(error) if error.is_retryable() && attempt < self.config.max_retries => {
+                        let attempt_number = attempt.saturating_add(1);
+                        self.append(
+                            session_id,
+                            SessionEvent::RetryAttempt {
+                                step_id: step_id.clone(),
+                                attempt: attempt_number,
+                                code: error.code.as_str().to_string(),
+                            },
+                        )?;
+                        emit(
+                            &sink,
+                            RunEvent::Retry {
+                                attempt: attempt_number,
+                                code: error.code.as_str().to_string(),
+                            },
+                        );
+                        let delay = retry_delay(self.config.retry_base_ms, attempt_number);
+                        tokio::select! {
+                            () = cancel.cancelled() => {
+                                return self.finish_turn(
+                                    session_id,
+                                    &turn_id,
+                                    TurnOutcome::Cancelled {
+                                        reason: "cancelled during retry backoff".to_string(),
+                                    },
+                                    final_text,
+                                    usage,
+                                    steps,
+                                    &sink,
+                                );
+                            }
+                            () = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                        }
+                    }
+                    Err(error) => {
+                        return self.fail_turn(
+                            session_id, &turn_id, &error, final_text, usage, steps, &sink,
+                        );
+                    }
                 }
+            }
+            let Some(mut stream) = stream else {
+                let error = LlmError::server("retry budget exhausted");
+                return self.fail_turn(
+                    session_id, &turn_id, &error, final_text, usage, steps, &sink,
+                );
             };
 
             let mut assembler = AssistantAssembler::new();
@@ -352,11 +427,8 @@ impl AgentLoop {
                 );
             }
 
-            let context = ToolContext::new(
-                self.config.cwd.clone(),
-                self.config.permission,
-                cancel.clone(),
-            );
+            let context = ToolContext::new(cwd, self.config.permission, cancel.clone())
+                .with_session(Arc::clone(&session_handle));
             let results = self.execute_calls(&calls, &context, &cancel, &sink).await;
             for result in results {
                 self.append(
@@ -397,11 +469,14 @@ impl AgentLoop {
         if self.store.has(session_id)? {
             return Ok(());
         }
-        let header = SessionHeader::new(
-            session_id.clone(),
-            self.clock.now_millis(),
-            Some(self.config.cwd.display().to_string()),
-        );
+        let header = SessionHeader {
+            parent_session: self.config.parent_session.clone(),
+            ..SessionHeader::new(
+                session_id.clone(),
+                self.clock.now_millis(),
+                Some(self.config.cwd.display().to_string()),
+            )
+        };
         match self.store.create(&header) {
             Ok(()) | Err(StoreError::AlreadyExists(_)) => Ok(()),
             Err(error) => Err(AgentError::Store(error)),
@@ -416,6 +491,30 @@ impl AgentLoop {
         self.store
             .append(session_id, self.clock.now_millis(), event)
             .map_err(AgentError::Store)
+    }
+
+    fn maybe_compact(
+        &self,
+        session_id: &SessionId,
+        messages: &mut Vec<Message>,
+        keep_from: dsh_core::EventSeq,
+    ) -> Result<(), AgentError> {
+        if message_chars(messages) <= self.config.max_context_chars {
+            return Ok(());
+        }
+        let events = self.store.load(session_id)?;
+        let older: Vec<Message> = events
+            .iter()
+            .filter(|record| record.seq < keep_from)
+            .filter_map(|record| record.event.message())
+            .collect();
+        if older.is_empty() {
+            return Ok(());
+        }
+        let summary = summarize_messages(&older);
+        self.append(session_id, SessionEvent::Compaction { summary, keep_from })?;
+        *messages = derive_messages(&self.store.load(session_id)?);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -623,6 +722,74 @@ impl AgentLoop {
     }
 }
 
+struct SessionHandle {
+    store: Arc<dyn SessionStore>,
+    session_id: SessionId,
+    clock: Arc<dyn Clock>,
+}
+
+impl ToolSession for SessionHandle {
+    fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+
+    fn append(&self, event: SessionEvent) -> Result<EventRecord, StoreError> {
+        self.store
+            .append(&self.session_id, self.clock.now_millis(), event)
+    }
+
+    fn now_millis(&self) -> i64 {
+        self.clock.now_millis()
+    }
+
+    fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<dsh_core::SessionSearchHit>, StoreError> {
+        self.store.search(query, limit)
+    }
+}
+
+fn message_chars(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|message| {
+            let text = message.text().chars().count();
+            let arguments: usize = message
+                .tool_calls()
+                .iter()
+                .map(|call| call.arguments.chars().count())
+                .sum();
+            text.saturating_add(arguments)
+        })
+        .sum()
+}
+
+fn summarize_messages(messages: &[Message]) -> String {
+    let mut summary = String::new();
+    for message in messages {
+        let text: String = message.text().chars().take(300).collect();
+        summary.push_str(message.role().as_str());
+        summary.push_str(": ");
+        summary.push_str(&text);
+        summary.push('\n');
+    }
+    summary.chars().take(4000).collect()
+}
+
+fn latest_cwd(events: &[EventRecord]) -> Option<PathBuf> {
+    events.iter().rev().find_map(|record| match &record.event {
+        SessionEvent::WorkingDirectoryChanged { cwd } => Some(PathBuf::from(cwd)),
+        _ => None,
+    })
+}
+
+fn retry_delay(base_ms: u64, attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(20);
+    base_ms.saturating_mul(1u64 << shift)
+}
+
 /// Group calls into execution batches. Consecutive concurrency-safe calls share
 /// a batch; every exclusive call is its own batch.
 #[must_use]
@@ -781,6 +948,32 @@ mod tests {
                 .remove(session_id)
                 .is_some())
         }
+
+        fn header(&self, session_id: &SessionId) -> Result<SessionHeader, StoreError> {
+            let state = self.state.lock().expect("lock");
+            state
+                .sessions
+                .get(session_id)
+                .map(|(header, _)| header.clone())
+                .ok_or_else(|| StoreError::NotFound(session_id.clone()))
+        }
+
+        fn search(
+            &self,
+            query: &str,
+            limit: usize,
+        ) -> Result<Vec<dsh_core::SessionSearchHit>, StoreError> {
+            if query == "hit" && limit > 0 {
+                Ok(vec![dsh_core::SessionSearchHit {
+                    session_id: SessionId::generate(),
+                    seq: dsh_core::EventSeq::new(1),
+                    kind: "user_message".to_string(),
+                    snippet: "hit".to_string(),
+                }])
+            } else {
+                Ok(Vec::new())
+            }
+        }
     }
 
     struct ScriptedProvider {
@@ -905,6 +1098,428 @@ mod tests {
         ) -> Result<LlmStream, LlmError> {
             Err(LlmError::missing_credential("no key"))
         }
+    }
+
+    struct RetryProvider {
+        failures: Mutex<VecDeque<LlmError>>,
+        responses: Mutex<VecDeque<Vec<Result<StreamEvent, LlmError>>>>,
+        requests: Mutex<Vec<LlmRequest>>,
+    }
+
+    impl RetryProvider {
+        fn new(
+            failures: Vec<LlmError>,
+            responses: Vec<Vec<Result<StreamEvent, LlmError>>>,
+        ) -> Self {
+            Self {
+                failures: Mutex::new(failures.into()),
+                responses: Mutex::new(responses.into()),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for RetryProvider {
+        fn name(&self) -> &'static str {
+            "retry"
+        }
+
+        async fn stream(
+            &self,
+            request: LlmRequest,
+            _cancel: CancellationToken,
+        ) -> Result<LlmStream, LlmError> {
+            self.requests.lock().expect("requests").push(request);
+            if let Some(error) = self.failures.lock().expect("failures").pop_front() {
+                return Err(error);
+            }
+            let response = self
+                .responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .unwrap_or_default();
+            Ok(Box::pin(stream::iter(response)))
+        }
+    }
+
+    #[tokio::test]
+    async fn retryable_failures_are_retried_and_logged() {
+        let provider = Arc::new(RetryProvider::new(
+            vec![LlmError::server("temporary")],
+            vec![text_response("recovered")],
+        ));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut config = config();
+        config.max_retries = 2;
+        config.retry_base_ms = 1;
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            tools(),
+            config,
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "hi", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(outcome.is_success());
+        assert_eq!(outcome.text, "recovered");
+        let events = store.load(&session_id).expect("load");
+        assert!(
+            events
+                .iter()
+                .any(|record| record.event.kind() == "retry_attempt")
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_closes_the_turn() {
+        let provider = Arc::new(RetryProvider::new(
+            vec![
+                LlmError::server("one"),
+                LlmError::server("two"),
+                LlmError::server("three"),
+            ],
+            Vec::new(),
+        ));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut config = config();
+        config.max_retries = 1;
+        config.retry_base_ms = 1;
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            tools(),
+            config,
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "hi", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(matches!(
+            outcome.outcome,
+            TurnOutcome::Failed { ref code, .. } if code == "SERVER_ERROR"
+        ));
+        let retries = store
+            .load(&session_id)
+            .expect("load")
+            .iter()
+            .filter(|record| record.event.kind() == "retry_attempt")
+            .count();
+        assert_eq!(retries, 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_failures_are_not_retried() {
+        let provider = Arc::new(RetryProvider::new(
+            vec![LlmError::missing_credential("no key")],
+            Vec::new(),
+        ));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut config = config();
+        config.max_retries = 3;
+        config.retry_base_ms = 1;
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            tools(),
+            config,
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "hi", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(matches!(
+            outcome.outcome,
+            TurnOutcome::Failed { ref code, .. } if code == "MISSING_CREDENTIAL"
+        ));
+        let events = store.load(&session_id).expect("load");
+        assert!(
+            !events
+                .iter()
+                .any(|record| record.event.kind() == "retry_attempt")
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::significant_drop_tightening)]
+    async fn long_histories_are_compacted_before_the_next_request() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            text_response("first"),
+            text_response("second"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut config = config();
+        config.max_context_chars = 10;
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider.clone(),
+            tools(),
+            config,
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        loop_
+            .run(&session_id, "first task", CancellationToken::new(), None)
+            .await
+            .expect("first");
+        let outcome = loop_
+            .run(&session_id, "second task", CancellationToken::new(), None)
+            .await
+            .expect("second");
+        assert_eq!(outcome.text, "second");
+        let events = store.load(&session_id).expect("load");
+        assert!(
+            events
+                .iter()
+                .any(|record| record.event.kind() == "compaction")
+        );
+        let requests = provider.requests.lock().expect("requests");
+        let second_request = &requests[1];
+        assert_eq!(second_request.messages.len(), 2);
+        assert!(second_request.messages[0].text().contains("Summary"));
+        assert!(second_request.messages[0].text().contains("first task"));
+        assert!(!second_request.messages[0].text().contains("second task"));
+        assert_eq!(second_request.messages[1].text(), "second task");
+    }
+
+    #[test]
+    fn retry_delays_grow_with_a_ceiling() {
+        assert_eq!(retry_delay(100, 1), 100);
+        assert_eq!(retry_delay(100, 2), 200);
+        assert_eq!(retry_delay(100, 3), 400);
+        assert_eq!(retry_delay(100, 21), 100 * (1u64 << 20));
+        assert_eq!(retry_delay(0, 5), 0);
+    }
+
+    #[test]
+    fn session_handles_report_clock_and_search() {
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let handle = SessionHandle {
+            store,
+            session_id,
+            clock: Arc::new(FixedClock(1_234)),
+        };
+        assert_eq!(handle.now_millis(), 1_234);
+        assert_eq!(handle.search("hit", 1).expect("search").len(), 1);
+        assert_eq!(handle.search("miss", 1).expect("search"), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn parent_sessions_are_recorded() {
+        let provider = Arc::new(ScriptedProvider::new(vec![text_response("child")]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let parent = SessionId::generate();
+        let mut config = config();
+        config.parent_session = Some(parent.clone());
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            tools(),
+            config,
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        loop_
+            .run(&session_id, "child task", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert_eq!(
+            store.header(&session_id).expect("header").parent_session,
+            Some(parent)
+        );
+    }
+
+    #[tokio::test]
+    async fn subagents_run_in_child_sessions() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            tool_response("call-1", "subagent", r#"{"task":"child task"}"#),
+            text_response("child done"),
+            text_response("parent done"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut registry = tools();
+        let subagent = Arc::new(crate::SubagentTool::new(
+            store.clone(),
+            provider.clone(),
+            registry.clone(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        ));
+        registry.insert(subagent).expect("subagent");
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            registry,
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "delegate", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(outcome.is_success());
+        assert_eq!(outcome.text, "parent done");
+        let parent_events = store.load(&session_id).expect("parent events");
+        let tool_result = parent_events
+            .iter()
+            .find_map(|record| match &record.event {
+                SessionEvent::ToolResult { message } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("tool result");
+        assert!(tool_result.text_content().contains("child done"));
+        let child = store
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|summary| summary.id != session_id)
+            .expect("child session");
+        assert_eq!(
+            store
+                .header(&child.id)
+                .expect("child header")
+                .parent_session,
+            Some(session_id)
+        );
+        let child_messages = derive_messages(&store.load(&child.id).expect("child events"));
+        assert!(
+            child_messages
+                .iter()
+                .any(|message| message.text() == "child task")
+        );
+        assert!(
+            child_messages
+                .iter()
+                .any(|message| message.text() == "child done")
+        );
+    }
+
+    #[tokio::test]
+    async fn subagents_require_a_session() {
+        let provider = Arc::new(ScriptedProvider::new(Vec::new()));
+        let store = Arc::new(MockStore::default());
+        let tool = crate::SubagentTool::new(
+            store,
+            provider,
+            tools(),
+            config(),
+            Arc::new(FixedClock(1_000)),
+        );
+        let context = ToolContext::new(
+            PathBuf::from("/work"),
+            PermissionMode::WorkspaceWrite,
+            CancellationToken::new(),
+        );
+        let outcome = tool
+            .execute(&context, serde_json::json!({"task": "child"}))
+            .await;
+        assert!(outcome.is_error);
+        assert!(outcome.text_content().contains("durable session"));
+    }
+
+    struct ChangeDirTool;
+    struct PwdTool;
+
+    #[async_trait]
+    impl Tool for ChangeDirTool {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "change_dir",
+                "change the session directory",
+                serde_json::json!({"type": "object"}),
+            )
+            .expect("schema")
+        }
+
+        async fn execute(
+            &self,
+            context: &ToolContext,
+            arguments: serde_json::Value,
+        ) -> ToolOutcome {
+            let Some(path) = arguments.get("path").and_then(serde_json::Value::as_str) else {
+                return ToolOutcome::error("path is required");
+            };
+            let Some(session) = context.session() else {
+                return ToolOutcome::error("session is required");
+            };
+            match session.append(SessionEvent::WorkingDirectoryChanged {
+                cwd: path.to_string(),
+            }) {
+                Ok(_) => ToolOutcome::text(format!("changed to {path}")),
+                Err(error) => ToolOutcome::error(error.to_string()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for PwdTool {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new("pwd", "read the session directory", serde_json::json!({}))
+                .expect("schema")
+        }
+
+        async fn execute(
+            &self,
+            context: &ToolContext,
+            _arguments: serde_json::Value,
+        ) -> ToolOutcome {
+            ToolOutcome::text(context.cwd.display().to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn working_directory_changes_apply_to_later_steps() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            tool_response("call-1", "change_dir", r#"{"path":"/tmp/next"}"#),
+            tool_response("call-2", "pwd", "{}"),
+            text_response("done"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        let mut registry = tools();
+        registry.insert(Arc::new(ChangeDirTool)).expect("change");
+        registry.insert(Arc::new(PwdTool)).expect("pwd");
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            registry,
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "move", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(outcome.is_success());
+        let events = store.load(&session_id).expect("load");
+        let results: Vec<_> = events
+            .iter()
+            .filter_map(|record| match &record.event {
+                SessionEvent::ToolResult { message } => Some(message.text_content()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0], "changed to /tmp/next");
+        assert_eq!(results[1], "/tmp/next");
     }
 
     #[tokio::test]

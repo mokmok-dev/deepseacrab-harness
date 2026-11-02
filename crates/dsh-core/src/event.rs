@@ -62,6 +62,83 @@ pub enum SessionEvent {
         /// Why the turn closed.
         outcome: TurnOutcome,
     },
+    /// The session todo list was replaced.
+    TodoWritten {
+        /// Full replacement list.
+        items: Vec<TodoItem>,
+    },
+    /// The session plan was set or updated.
+    PlanSet {
+        /// Ordered plan steps.
+        steps: Vec<String>,
+        /// Whether the user approved the plan.
+        approved: bool,
+    },
+    /// The session goal was set or updated.
+    GoalSet {
+        /// Completion objective.
+        objective: String,
+        /// Current phase.
+        phase: GoalPhase,
+    },
+    /// The session working directory changed.
+    WorkingDirectoryChanged {
+        /// Physical directory.
+        cwd: String,
+    },
+    /// Earlier history was replaced by a durable summary.
+    Compaction {
+        /// Summary that replaces the earlier messages.
+        summary: String,
+        /// First retained event position.
+        keep_from: EventSeq,
+    },
+    /// One retry attempt was scheduled for a step.
+    RetryAttempt {
+        /// Step being retried.
+        step_id: StepId,
+        /// One-based attempt number.
+        attempt: u32,
+        /// Machine code of the failure that triggered the retry.
+        code: String,
+    },
+}
+
+/// One item in the session todo list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoItem {
+    /// Stable item identity.
+    pub id: String,
+    /// Task text.
+    pub text: String,
+    /// Current status.
+    pub status: TodoStatus,
+}
+
+/// Lifecycle of one todo item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    /// Not started.
+    Pending,
+    /// Currently being worked on.
+    InProgress,
+    /// Done.
+    Completed,
+}
+
+/// Lifecycle of the session goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalPhase {
+    /// Automatic continuation is armed.
+    Active,
+    /// Automatic continuation is paused.
+    Paused,
+    /// Progress needs human input.
+    Blocked,
+    /// The objective was met.
+    Complete,
 }
 
 impl SessionEvent {
@@ -76,6 +153,12 @@ impl SessionEvent {
             Self::AssistantMessage { .. } => "assistant_message",
             Self::ToolResult { .. } => "tool_result",
             Self::TurnEnded { .. } => "turn_ended",
+            Self::TodoWritten { .. } => "todo_written",
+            Self::PlanSet { .. } => "plan_set",
+            Self::GoalSet { .. } => "goal_set",
+            Self::WorkingDirectoryChanged { .. } => "working_directory_changed",
+            Self::Compaction { .. } => "compaction",
+            Self::RetryAttempt { .. } => "retry_attempt",
         }
     }
 
@@ -89,7 +172,13 @@ impl SessionEvent {
             Self::SessionCreated { .. }
             | Self::TurnStarted { .. }
             | Self::StepStarted { .. }
-            | Self::TurnEnded { .. } => None,
+            | Self::TurnEnded { .. }
+            | Self::TodoWritten { .. }
+            | Self::PlanSet { .. }
+            | Self::GoalSet { .. }
+            | Self::WorkingDirectoryChanged { .. }
+            | Self::Compaction { .. }
+            | Self::RetryAttempt { .. } => None,
         }
     }
 }
@@ -130,10 +219,30 @@ impl TurnOutcome {
 /// the order in which the model must read the messages.
 #[must_use]
 pub fn derive_messages(events: &[EventRecord]) -> Vec<Message> {
-    events
-        .iter()
-        .filter_map(|record| record.event.message())
-        .collect()
+    let compaction = events.iter().rev().find_map(|record| match &record.event {
+        SessionEvent::Compaction { summary, keep_from } => Some((summary, *keep_from)),
+        _ => None,
+    });
+    let mut messages = Vec::new();
+    if let Some((summary, keep_from)) = compaction {
+        messages.push(Message::user(format!(
+            "Summary of earlier conversation:\n{summary}"
+        )));
+        for record in events {
+            if record.seq >= keep_from {
+                if let Some(message) = record.event.message() {
+                    messages.push(message);
+                }
+            }
+        }
+    } else {
+        for record in events {
+            if let Some(message) = record.event.message() {
+                messages.push(message);
+            }
+        }
+    }
+    messages
 }
 
 #[cfg(test)]
@@ -297,5 +406,82 @@ mod tests {
             .kind(),
             "tool_result"
         );
+    }
+
+    #[test]
+    fn compaction_replaces_earlier_messages() {
+        let records = vec![
+            record(
+                SessionEvent::SessionCreated {
+                    cwd: None,
+                    created_at: 0,
+                    format_version: 1,
+                },
+                0,
+            ),
+            record(user_event("old question".to_string()), 1),
+            record(
+                SessionEvent::AssistantMessage {
+                    message: AssistantMessage {
+                        id: MessageId::generate(),
+                        content: vec![ContentBlock::text("old answer")],
+                        provider: crate::ids::ProviderId::parse("deepseek").expect("provider"),
+                        model: crate::ids::ModelId::parse("deepseek-flash").expect("model"),
+                        usage: TokenUsage::default(),
+                    },
+                },
+                2,
+            ),
+            record(
+                SessionEvent::Compaction {
+                    summary: "we discussed the old question".to_string(),
+                    keep_from: EventSeq::new(4),
+                },
+                3,
+            ),
+            record(user_event("new question".to_string()), 4),
+        ];
+        let messages = derive_messages(&records);
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages[0]
+                .text()
+                .contains("Summary of earlier conversation")
+        );
+        assert!(messages[0].text().contains("we discussed the old question"));
+        assert_eq!(messages[1].text(), "new question");
+    }
+
+    #[test]
+    fn session_management_facts_are_not_model_history() {
+        let events = [
+            SessionEvent::TodoWritten {
+                items: vec![TodoItem {
+                    id: "1".to_string(),
+                    text: "work".to_string(),
+                    status: TodoStatus::Pending,
+                }],
+            },
+            SessionEvent::PlanSet {
+                steps: vec!["step".to_string()],
+                approved: false,
+            },
+            SessionEvent::GoalSet {
+                objective: "ship".to_string(),
+                phase: GoalPhase::Active,
+            },
+            SessionEvent::WorkingDirectoryChanged {
+                cwd: "/work".to_string(),
+            },
+            SessionEvent::RetryAttempt {
+                step_id: StepId::generate(),
+                attempt: 1,
+                code: "RATE_LIMITED".to_string(),
+            },
+        ];
+        for event in events {
+            assert!(event.message().is_none());
+            assert_ne!(event.kind(), "");
+        }
     }
 }

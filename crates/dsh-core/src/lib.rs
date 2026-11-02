@@ -20,7 +20,9 @@ pub mod store;
 pub mod tool;
 
 pub use config::{Config, ConfigError, Env, SystemEnv};
-pub use event::{EventRecord, SessionEvent, TurnOutcome, derive_messages};
+pub use event::{
+    EventRecord, GoalPhase, SessionEvent, TodoItem, TodoStatus, TurnOutcome, derive_messages,
+};
 pub use ids::{
     EventSeq, IdError, MessageId, ModelId, ProviderId, SessionId, StepId, ToolCallId, TurnId,
 };
@@ -37,8 +39,9 @@ pub use plugin::{
     Clock, ComposeError, Effect, FixedClock, Plugin, PluginContext, PluginError, Registry, Runtime,
     SystemClock, compose,
 };
-pub use session::{SESSION_FORMAT_VERSION, SessionHeader, SessionSummary};
+pub use session::{SESSION_FORMAT_VERSION, SessionHeader, SessionSearchHit, SessionSummary};
 pub use store::{SessionStore, StoreError};
 pub use tool::{
     PermissionMode, Tool, ToolContext, ToolOutcome, ToolRegistry, ToolRegistryError, ToolSchema,
+    ToolSession,
 };

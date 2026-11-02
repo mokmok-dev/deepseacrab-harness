@@ -127,7 +127,7 @@ fn html_to_text(html: &str) -> String {
     decode_entities(&strip_tags(html))
 }
 
-fn strip_tags(html: &str) -> String {
+pub fn strip_tags(html: &str) -> String {
     let mut output = String::with_capacity(html.len());
     let mut in_tag = false;
     for character in html.chars() {
@@ -141,7 +141,7 @@ fn strip_tags(html: &str) -> String {
     output
 }
 
-fn decode_entities(text: &str) -> String {
+pub fn decode_entities(text: &str) -> String {
     text.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")

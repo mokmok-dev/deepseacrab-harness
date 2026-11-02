@@ -23,6 +23,14 @@ pub enum Command {
     Tools,
     /// Print effective configuration.
     Config,
+    /// Serve the browser client.
+    Web {
+        /// Bind address.
+        #[arg(long, default_value = "127.0.0.1:3080")]
+        bind: String,
+    },
+    /// Serve the line-delimited JSON-RPC SDK on stdio.
+    Sdk,
 }
 
 /// One-shot task arguments.
@@ -66,6 +74,37 @@ pub enum SessionsCommand {
     List,
     /// Print one session's event log.
     Show {
+        /// Exact session identity.
+        session_id: String,
+    },
+    /// Copy a session prefix into a new session.
+    Fork {
+        /// Source session identity.
+        source: String,
+        /// New session identity.
+        target: String,
+        /// Last source sequence to copy; defaults to the latest.
+        #[arg(long)]
+        through: Option<u64>,
+    },
+    /// Export a session as newline-delimited JSON.
+    Export {
+        /// Exact session identity.
+        session_id: String,
+        /// Write to this path instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Search durable event payloads.
+    Search {
+        /// Text to find.
+        query: String,
+        /// Maximum hits.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Seal a turn left open by a process loss.
+    Repair {
         /// Exact session identity.
         session_id: String,
     },
@@ -127,6 +166,57 @@ mod tests {
         assert!(matches!(
             args.command,
             SessionsCommand::Show { ref session_id } if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn parses_session_admin_commands() {
+        let cli = Cli::try_parse_from([
+            "dsh",
+            "sessions",
+            "fork",
+            "source",
+            "target",
+            "--through",
+            "3",
+        ])
+        .expect("fork");
+        let Command::Sessions(args) = cli.command else {
+            panic!("expected sessions");
+        };
+        assert!(matches!(
+            args.command,
+            SessionsCommand::Fork { ref source, ref target, through: Some(3) }
+                if source == "source" && target == "target"
+        ));
+
+        let cli = Cli::try_parse_from(["dsh", "sessions", "search", "needle", "--limit", "5"])
+            .expect("search");
+        let Command::Sessions(args) = cli.command else {
+            panic!("expected sessions");
+        };
+        assert!(matches!(
+            args.command,
+            SessionsCommand::Search { ref query, limit: 5 } if query == "needle"
+        ));
+
+        let cli = Cli::try_parse_from(["dsh", "sessions", "repair", "session-1"]).expect("repair");
+        assert!(matches!(cli.command, Command::Sessions(_)));
+        let cli = Cli::try_parse_from(["dsh", "sessions", "export", "session-1"]).expect("export");
+        assert!(matches!(cli.command, Command::Sessions(_)));
+    }
+
+    #[test]
+    fn parses_web_bind_address() {
+        let cli = Cli::try_parse_from(["dsh", "web", "--bind", "127.0.0.1:0"]).expect("web");
+        assert!(matches!(
+            cli.command,
+            Command::Web { ref bind } if bind == "127.0.0.1:0"
+        ));
+        let cli = Cli::try_parse_from(["dsh", "web"]).expect("web default");
+        assert!(matches!(
+            cli.command,
+            Command::Web { ref bind } if bind == "127.0.0.1:3080"
         ));
     }
 

@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DeepSeek Harness</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        height: 100vh;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #8884;
+      }
+      header h1 {
+        font-size: 1rem;
+        margin: 0;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 16rem 1fr;
+        min-height: 0;
+      }
+      aside {
+        border-right: 1px solid #8884;
+        padding: 0.75rem;
+        overflow-y: auto;
+      }
+      aside h2 {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        opacity: 0.7;
+        margin-top: 0;
+      }
+      #sessions {
+        list-style: none;
+        margin: 0.5rem 0 0;
+        padding: 0;
+        display: grid;
+        gap: 0.35rem;
+      }
+      #sessions button {
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        padding: 0.35rem 0.5rem;
+        overflow-wrap: anywhere;
+      }
+      #chat {
+        display: grid;
+        grid-template-rows: 1fr auto;
+        min-height: 0;
+      }
+      #transcript {
+        overflow-y: auto;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .row {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .user {
+        font-weight: 600;
+      }
+      .thinking {
+        font-style: italic;
+        opacity: 0.7;
+      }
+      .tool {
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+        border-left: 2px solid #8886;
+        padding-left: 0.5rem;
+      }
+      .error {
+        color: #c62828;
+      }
+      .status,
+      .session {
+        font-size: 0.85rem;
+        opacity: 0.7;
+      }
+      form {
+        display: grid;
+        gap: 0.5rem;
+        padding: 0.75rem;
+        border-top: 1px solid #8884;
+      }
+      form input,
+      form textarea,
+      form button {
+        font: inherit;
+        padding: 0.5rem;
+      }
+      form button {
+        justify-self: end;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>DeepSeek Harness</h1>
+      <span id="state" class="status"></span>
+    </header>
+    <main>
+      <aside>
+        <h2>Sessions</h2>
+        <button id="refresh" type="button">Refresh</button>
+        <ul id="sessions"></ul>
+      </aside>
+      <section id="chat">
+        <div id="transcript" aria-live="polite"></div>
+        <form id="composer">
+          <input id="session" type="text" placeholder="session id (optional)" autocomplete="off">
+          <textarea id="task" rows="3" placeholder="Describe the task" required></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+    <script>
+      const transcript = document.querySelector('#transcript');
+      const taskInput = document.querySelector('#task');
+      const sessionInput = document.querySelector('#session');
+      const sessionList = document.querySelector('#sessions');
+      const stateLabel = document.querySelector('#state');
+      let answer = null;
+
+      function row(kind, text) {
+        const node = document.createElement('div');
+        node.className = 'row ' + kind;
+        node.textContent = text;
+        transcript.append(node);
+        transcript.scrollTop = transcript.scrollHeight;
+        return node;
+      }
+
+      function textOf(blocks) {
+        return blocks.map((block) => block.text || '').join('');
+      }
+
+      function show(event) {
+        switch (event.type) {
+          case 'session':
+            sessionInput.value = event.session_id;
+            row('session', 'session ' + event.session_id);
+            break;
+          case 'status':
+            row('status', event.text);
+            break;
+          case 'text':
+            if (!answer) answer = row('text', '');
+            answer.textContent += event.text;
+            transcript.scrollTop = transcript.scrollHeight;
+            break;
+          case 'thinking':
+            row('thinking', event.text);
+            break;
+          case 'tool_call':
+            answer = null;
+            row('tool', 'call ' + event.name + ' ' + event.id);
+            break;
+          case 'tool_result':
+            answer = null;
+            row('tool', (event.is_error ? 'error ' : 'result ') + event.name + '\n' + event.output);
+            break;
+          case 'retry':
+            row('status', 'retry ' + event.attempt + ' after ' + event.code);
+            break;
+          case 'error':
+            row('error', event.code + ': ' + event.message);
+            break;
+          case 'final':
+            answer = null;
+            row('final', 'turn ' + event.outcome.outcome + (event.text ? ': ' + event.text : ''));
+            loadSessions();
+            break;
+          default:
+            row('status', JSON.stringify(event));
+        }
+      }
+
+      function replay(event) {
+        switch (event.type) {
+          case 'user_message':
+            row('user', textOf(event.message.content));
+            break;
+          case 'assistant_message': {
+            const text = textOf(event.message.content);
+            if (text) row('text', text);
+            for (const block of event.message.content) {
+              if (block.type === 'tool_call') {
+                row('tool', 'call ' + block.call.name + ' ' + block.call.arguments);
+              }
+            }
+            break;
+          }
+          case 'tool_result':
+            row('tool', (event.message.is_error ? 'error ' : 'result ') + textOf(event.message.content));
+            break;
+          case 'turn_ended':
+            row('final', 'turn ' + event.outcome.outcome);
+            break;
+          default:
+            break;
+        }
+      }
+
+      async function openSession(id) {
+        const response = await fetch('/api/sessions/' + encodeURIComponent(id));
+        if (!response.ok) {
+          row('error', 'cannot load ' + id);
+          return;
+        }
+        transcript.textContent = '';
+        answer = null;
+        sessionInput.value = id;
+        for (const record of await response.json()) replay(record.event);
+      }
+
+      async function loadSessions() {
+        const response = await fetch('/api/sessions');
+        if (!response.ok) return;
+        const sessions = await response.json();
+        sessionList.textContent = '';
+        for (const session of sessions) {
+          const item = document.createElement('li');
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = session.id + ' (' + session.event_count + ')';
+          button.addEventListener('click', () => openSession(session.id));
+          item.append(button);
+          sessionList.append(item);
+        }
+      }
+
+      async function send(event) {
+        event.preventDefault();
+        const task = taskInput.value;
+        const sessionId = sessionInput.value.trim();
+        if (!task.trim()) {
+          row('error', 'task must not be empty');
+          return;
+        }
+        stateLabel.textContent = 'running';
+        try {
+          const response = await fetch('/api/run', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ task, session_id: sessionId || undefined }),
+          });
+          if (!response.ok) {
+            const failure = await response.json().catch(() => ({ error: response.statusText }));
+            row('error', failure.error);
+            return;
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            let edge = buffer.indexOf('\n\n');
+            while (edge >= 0) {
+              const frame = buffer.slice(0, edge);
+              buffer = buffer.slice(edge + 2);
+              for (const line of frame.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                  show(JSON.parse(line.slice(6)));
+                } catch (parseError) {
+                  row('error', 'unreadable frame');
+                }
+              }
+              edge = buffer.indexOf('\n\n');
+            }
+          }
+        } catch (failure) {
+          row('error', String(failure));
+        } finally {
+          stateLabel.textContent = '';
+        }
+      }
+
+      document.querySelector('#composer').addEventListener('submit', send);
+      document.querySelector('#refresh').addEventListener('click', loadSessions);
+      loadSessions();
+    </script>
+  </body>
+</html>

@@ -55,6 +55,12 @@ pub struct Config {
     pub max_steps: u32,
     /// Maximum parallel tool calls.
     pub max_parallel_tools: usize,
+    /// Retryable provider failures retried before the turn fails.
+    pub max_retries: u32,
+    /// Base delay for exponential retry backoff.
+    pub retry_base_ms: u64,
+    /// Estimated history characters that trigger compaction.
+    pub max_context_chars: usize,
     /// Effective permission mode.
     pub permission: PermissionMode,
     /// Harness home directory for sessions and configuration.
@@ -73,6 +79,9 @@ impl Default for Config {
             effort: ReasoningEffort::High,
             max_steps: DEFAULT_MAX_STEPS,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
+            max_retries: 2,
+            retry_base_ms: 500,
+            max_context_chars: 200_000,
             permission: PermissionMode::WorkspaceWrite,
             home: default_home(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
@@ -115,6 +124,9 @@ impl Config {
             "DSH_MAX_PARALLEL_TOOLS",
             DEFAULT_MAX_PARALLEL_TOOLS,
         )?;
+        let max_retries = parse_u32(&lookup, "DSH_MAX_RETRIES", 2)?;
+        let retry_base_ms = parse_u64(&lookup, "DSH_RETRY_BASE_MS", 500)?;
+        let max_context_chars = parse_positive_usize(&lookup, "DSH_MAX_CONTEXT_CHARS", 200_000)?;
 
         let effort = match lookup("DSH_REASONING_EFFORT") {
             Some(raw) => ReasoningEffort::parse(&raw).ok_or(ConfigError::InvalidValue {
@@ -144,6 +156,9 @@ impl Config {
             effort,
             max_steps,
             max_parallel_tools,
+            max_retries,
+            retry_base_ms,
+            max_context_chars,
             permission,
             home,
             system_prompt,
@@ -204,6 +219,28 @@ where
         return Err(ConfigError::InvalidNumber { key });
     }
     Ok(value)
+}
+
+fn parse_u32<F>(lookup: &F, key: &'static str, default: u32) -> Result<u32, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(raw) = lookup(key) else {
+        return Ok(default);
+    };
+    raw.parse::<u32>()
+        .map_err(|_| ConfigError::InvalidNumber { key })
+}
+
+fn parse_u64<F>(lookup: &F, key: &'static str, default: u64) -> Result<u64, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(raw) = lookup(key) else {
+        return Ok(default);
+    };
+    raw.parse::<u64>()
+        .map_err(|_| ConfigError::InvalidNumber { key })
 }
 
 /// Whether a string is an HTTP(S) root with a non-empty authority.
@@ -282,6 +319,9 @@ mod tests {
         assert_eq!(config.max_tokens, DEFAULT_MAX_TOKENS);
         assert_eq!(config.max_steps, DEFAULT_MAX_STEPS);
         assert_eq!(config.max_parallel_tools, DEFAULT_MAX_PARALLEL_TOOLS);
+        assert_eq!(config.max_retries, 2);
+        assert_eq!(config.retry_base_ms, 500);
+        assert_eq!(config.max_context_chars, 200_000);
         assert_eq!(config.effort, ReasoningEffort::High);
         assert_eq!(config.permission, PermissionMode::WorkspaceWrite);
         assert_eq!(config.api_key_env, "DEEPSEEK_API_KEY");
@@ -297,6 +337,9 @@ mod tests {
             ("DSH_MAX_TOKENS", "128"),
             ("DSH_MAX_STEPS", "3"),
             ("DSH_MAX_PARALLEL_TOOLS", "1"),
+            ("DSH_MAX_RETRIES", "0"),
+            ("DSH_RETRY_BASE_MS", "25"),
+            ("DSH_MAX_CONTEXT_CHARS", "4096"),
             ("DSH_REASONING_EFFORT", "low"),
             ("DSH_PERMISSION_MODE", "read-only"),
             ("DSH_HOME", "/tmp/dsh-home"),
@@ -309,6 +352,9 @@ mod tests {
         assert_eq!(config.max_tokens, 128);
         assert_eq!(config.max_steps, 3);
         assert_eq!(config.max_parallel_tools, 1);
+        assert_eq!(config.max_retries, 0);
+        assert_eq!(config.retry_base_ms, 25);
+        assert_eq!(config.max_context_chars, 4096);
         assert_eq!(config.effort, ReasoningEffort::Low);
         assert_eq!(config.permission, PermissionMode::ReadOnly);
         assert_eq!(config.home, PathBuf::from("/tmp/dsh-home"));
@@ -333,6 +379,24 @@ mod tests {
             config_from(&[("DSH_MAX_PARALLEL_TOOLS", "many")]),
             Err(ConfigError::InvalidNumber {
                 key: "DSH_MAX_PARALLEL_TOOLS"
+            })
+        );
+        assert_eq!(
+            config_from(&[("DSH_MAX_RETRIES", "-1")]),
+            Err(ConfigError::InvalidNumber {
+                key: "DSH_MAX_RETRIES"
+            })
+        );
+        assert_eq!(
+            config_from(&[("DSH_RETRY_BASE_MS", "later")]),
+            Err(ConfigError::InvalidNumber {
+                key: "DSH_RETRY_BASE_MS"
+            })
+        );
+        assert_eq!(
+            config_from(&[("DSH_MAX_CONTEXT_CHARS", "0")]),
+            Err(ConfigError::InvalidNumber {
+                key: "DSH_MAX_CONTEXT_CHARS"
             })
         );
     }

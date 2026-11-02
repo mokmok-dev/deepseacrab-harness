@@ -38,7 +38,7 @@
         let
           rustToolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-          src = craneLib.cleanCargoSource ./.;
+          src = pkgs.lib.cleanSourceWith { src = ./.; };
           commonArgs = {
             inherit src;
             strictDeps = true;

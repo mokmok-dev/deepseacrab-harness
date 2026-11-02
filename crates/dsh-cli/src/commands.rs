@@ -5,8 +5,9 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use dsh_agent::{AgentConfig, AgentLoop, EventSink, RunEvent};
 use dsh_core::{
-    Clock, Config, Env, ModelId, PermissionMode, Plugin, PluginContext, PluginError, Runtime,
-    SessionEvent, SessionId, SessionStore, SystemClock, SystemEnv, TurnOutcome, compose,
+    Clock, Config, Env, EventSeq, ModelId, PermissionMode, Plugin, PluginContext, PluginError,
+    Runtime, SessionEvent, SessionHeader, SessionId, SessionStore, SystemClock, SystemEnv,
+    TurnOutcome, compose,
 };
 use dsh_llm::{DeepSeekConfig, DeepSeekProvider};
 use dsh_session::SqliteSessionStore;
@@ -25,6 +26,8 @@ pub async fn run() -> anyhow::Result<ExitCode> {
         Command::Sessions(args) => sessions(args),
         Command::Tools => tools(),
         Command::Config => show_config(),
+        Command::Web { bind } => web(bind).await,
+        Command::Sdk => sdk().await,
     }
 }
 
@@ -68,11 +71,24 @@ async fn run_task(args: RunArgs) -> anyhow::Result<ExitCode> {
         max_parallel_tools: config.max_parallel_tools,
         permission: config.permission,
         cwd,
+        max_retries: config.max_retries,
+        retry_base_ms: config.retry_base_ms,
+        max_context_chars: config.max_context_chars,
+        parent_session: None,
     };
+    let mut tools = runtime.tools;
+    let subagent = Arc::new(dsh_agent::SubagentTool::new(
+        Arc::clone(&runtime.store),
+        Arc::clone(&runtime.provider),
+        tools.clone(),
+        agent_config.clone(),
+        Arc::new(SystemClock) as Arc<dyn Clock>,
+    ));
+    tools.insert(subagent)?;
     let agent = AgentLoop::new(
         runtime.store,
         runtime.provider,
-        runtime.tools,
+        tools,
         agent_config,
         Arc::new(SystemClock) as Arc<dyn Clock>,
     )?;
@@ -102,11 +118,106 @@ fn config_from_env() -> anyhow::Result<Config> {
     Ok(Config::from_lookup(|key| std::env::var(key).ok())?)
 }
 
+async fn web(bind: String) -> anyhow::Result<ExitCode> {
+    let config = config_from_env()?;
+    let cwd = resolve_cwd(None)?;
+    let env = SystemEnv;
+    let runtime = build_runtime(&config, &env)?;
+    let agent_config = AgentConfig {
+        model: ModelId::parse(&config.model)?,
+        system_prompt: config.system_prompt.clone(),
+        max_tokens: config.max_tokens,
+        effort: config.effort,
+        max_steps: config.max_steps,
+        max_parallel_tools: config.max_parallel_tools,
+        permission: config.permission,
+        cwd,
+        max_retries: config.max_retries,
+        retry_base_ms: config.retry_base_ms,
+        max_context_chars: config.max_context_chars,
+        parent_session: None,
+    };
+    let mut tools = runtime.tools;
+    let subagent = Arc::new(dsh_agent::SubagentTool::new(
+        Arc::clone(&runtime.store),
+        Arc::clone(&runtime.provider),
+        tools.clone(),
+        agent_config.clone(),
+        Arc::new(SystemClock) as Arc<dyn Clock>,
+    ));
+    tools.insert(subagent)?;
+    let address: std::net::SocketAddr = bind.parse().context("invalid bind address")?;
+    let state = dsh_web::WebState {
+        store: runtime.store,
+        provider: runtime.provider,
+        tools,
+        config: agent_config,
+        clock: Arc::new(SystemClock) as Arc<dyn Clock>,
+    };
+    let cancel = CancellationToken::new();
+    install_cancel_with(cancel.clone(), async {
+        let _ = tokio::signal::ctrl_c().await;
+    });
+    println!("dsh web listening on http://{address}");
+    dsh_web::serve(state, address, cancel)
+        .await
+        .map_err(|error| anyhow!("{error}"))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn sdk() -> anyhow::Result<ExitCode> {
+    let config = config_from_env()?;
+    let cwd = resolve_cwd(None)?;
+    let env = SystemEnv;
+    let runtime = build_runtime(&config, &env)?;
+    let agent_config = AgentConfig {
+        model: ModelId::parse(&config.model)?,
+        system_prompt: config.system_prompt.clone(),
+        max_tokens: config.max_tokens,
+        effort: config.effort,
+        max_steps: config.max_steps,
+        max_parallel_tools: config.max_parallel_tools,
+        permission: config.permission,
+        cwd,
+        max_retries: config.max_retries,
+        retry_base_ms: config.retry_base_ms,
+        max_context_chars: config.max_context_chars,
+        parent_session: None,
+    };
+    let mut tools = runtime.tools;
+    let subagent = Arc::new(dsh_agent::SubagentTool::new(
+        Arc::clone(&runtime.store),
+        Arc::clone(&runtime.provider),
+        tools.clone(),
+        agent_config.clone(),
+        Arc::new(SystemClock) as Arc<dyn Clock>,
+    ));
+    tools.insert(subagent)?;
+    let state = dsh_sdk::SdkState {
+        store: runtime.store,
+        provider: runtime.provider,
+        tools,
+        config: agent_config,
+        clock: Arc::new(SystemClock) as Arc<dyn Clock>,
+    };
+    let cancel = CancellationToken::new();
+    install_cancel_with(cancel.clone(), async {
+        let _ = tokio::signal::ctrl_c().await;
+    });
+    let reader = tokio::io::BufReader::new(tokio::io::stdin());
+    dsh_sdk::serve_io(state, reader, tokio::io::stdout(), cancel)
+        .await
+        .map_err(|error| anyhow!("{error}"))?;
+    Ok(ExitCode::SUCCESS)
+}
+
 fn build_runtime(config: &Config, env: &dyn Env) -> anyhow::Result<Runtime> {
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(SqliteStorePlugin),
         Box::new(DeepSeekPlugin),
         Box::new(ToolsPlugin),
+        Box::new(dsh_jobs::JobsPlugin),
+        Box::new(dsh_mcp::McpPlugin::from_env()),
     ];
     compose(&plugins, config, env).map_err(|error| anyhow!("{error}"))
 }
@@ -221,6 +332,9 @@ fn text_sink() -> EventSink {
                 truncate(first, 160)
             );
         }
+        RunEvent::Retry { attempt, code } => {
+            eprintln!("dsh: retry {attempt} after {code}");
+        }
         RunEvent::Error { code, message } => eprintln!("dsh: {code}: {message}"),
         RunEvent::Session { .. }
         | RunEvent::Status { .. }
@@ -261,12 +375,67 @@ fn sessions(args: SessionsArgs) -> anyhow::Result<ExitCode> {
                 );
             }
         }
+        SessionsCommand::Fork {
+            source,
+            target,
+            through,
+        } => {
+            let source = SessionId::parse(source)?;
+            let target = SessionId::parse(target)?;
+            let through = match through {
+                Some(seq) => EventSeq::new(seq),
+                None => store
+                    .load(&source)?
+                    .last()
+                    .map_or(EventSeq::FIRST, |record| record.seq),
+            };
+            let cwd = std::env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string());
+            let header =
+                SessionHeader::new(target.clone(), chrono::Utc::now().timestamp_millis(), cwd);
+            store.fork(&source, &header, through)?;
+            println!("{target}");
+        }
+        SessionsCommand::Export { session_id, output } => {
+            let id = SessionId::parse(session_id)?;
+            let exported = store.export(&id)?;
+            if let Some(path) = output {
+                std::fs::write(&path, exported)?;
+                println!("{}", path.display());
+            } else {
+                print!("{exported}");
+            }
+        }
+        SessionsCommand::Search { query, limit } => {
+            for hit in store.search(&query, limit)? {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    hit.session_id, hit.seq, hit.kind, hit.snippet
+                );
+            }
+        }
+        SessionsCommand::Repair { session_id } => {
+            let id = SessionId::parse(session_id)?;
+            let repaired = store.repair(&id, chrono::Utc::now().timestamp_millis())?;
+            println!(
+                "{}",
+                if repaired {
+                    "repaired"
+                } else {
+                    "nothing to repair"
+                }
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
 fn tools() -> anyhow::Result<ExitCode> {
-    let registry = dsh_tools::default_registry()?;
+    let mut registry = dsh_tools::default_registry()?;
+    for tool in dsh_jobs::default_jobs() {
+        registry.insert(tool)?;
+    }
     for schema in registry.schemas() {
         println!("{}\t{}", schema.name, schema.description);
     }
@@ -290,6 +459,9 @@ fn show_config() -> anyhow::Result<ExitCode> {
         "effort": effort,
         "max_steps": config.max_steps,
         "max_parallel_tools": config.max_parallel_tools,
+        "max_retries": config.max_retries,
+        "retry_base_ms": config.retry_base_ms,
+        "max_context_chars": config.max_context_chars,
         "permission": permission,
         "home": home,
         "database": database,
@@ -311,6 +483,14 @@ fn summarize_event(event: &SessionEvent) -> String {
             truncate(&message.text_content(), 120)
         ),
         SessionEvent::TurnEnded { outcome, .. } => describe_outcome(outcome),
+        SessionEvent::TodoWritten { items } => format!("{} todos", items.len()),
+        SessionEvent::PlanSet { steps, approved } => {
+            format!("{} steps, approved: {approved}", steps.len())
+        }
+        SessionEvent::GoalSet { objective, phase } => format!("{phase:?}: {objective}"),
+        SessionEvent::WorkingDirectoryChanged { cwd } => cwd.clone(),
+        SessionEvent::Compaction { summary, .. } => truncate(summary, 120),
+        SessionEvent::RetryAttempt { attempt, code, .. } => format!("attempt {attempt}: {code}"),
     }
 }
 

@@ -10,8 +10,10 @@
 
 pub mod assembler;
 pub mod runner;
+pub mod subagent;
 
 pub use assembler::AssistantAssembler;
 pub use runner::{
     AgentConfig, AgentError, AgentLoop, EventSink, RunEvent, RunOutcome, plan_batches,
 };
+pub use subagent::SubagentTool;
