@@ -4,11 +4,11 @@ This rewrite covers the headless harness. It is eighteen crates and 40 first-par
 
 ## Verified
 
-- `cargo test --workspace`: 777 tests pass.
+- `cargo test --workspace`: 820 tests pass.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
 - `nix flake check`: clippy, test, treefmt, and pre-commit pass.
-- `cargo-mutants`: 1301 mutants, 968 caught, 333 unviable, 0 missed, 0 timeouts.
+- `cargo-mutants`: 1350 mutants, 1006 caught, 344 unviable, 0 missed, 0 timeouts.
 
 The counts come from per-crate mutation runs. The command is `./scripts/mutants.sh`.
 
@@ -18,7 +18,8 @@ The counts come from per-crate mutation runs. The command is `./scripts/mutants.
 |---|---|
 | Agent loop, streaming, cancellation, retry, compaction | Complete for this scope |
 | SQLite session log, fork, export, search, repair, header | Complete |
-| DeepSeek Messages adapter, SSE, tools, thinking, inline images | Complete |
+| Messages adapter for the built-in route and configured routes, SSE, tools, thinking, inline images | Complete |
+| Provider routes, selection, and route-keyed credentials | Complete |
 | CLI, browser client, JSON-RPC SDK | Complete for this scope |
 | Filesystem, search, web, image, patch, worktree tools | Complete |
 | Subagent, workflow, Ralph, jobs, schedules, teams | Complete |

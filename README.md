@@ -6,14 +6,14 @@ The binary is `dsh`.
 
 ## Status
 
-The headless product works end to end. A task can be submitted from the CLI, the browser client, or the JSON-RPC SDK, streamed from the DeepSeek Messages API, executed through built-in and MCP tools, and persisted to SQLite. Sessions can be resumed, forked, searched, exported, and inspected.
+The headless product works end to end. A task can be submitted from the CLI, the browser client, or the JSON-RPC SDK, streamed from a Messages-compatible provider, executed through built-in and MCP tools, and persisted to SQLite. Sessions can be resumed, forked, searched, exported, and inspected.
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 777 tests passed.
+- `cargo test --workspace`: 820 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The eighteen crates produced 968 caught viable mutants and 333 unviable mutants.
+- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The eighteen crates produced 1006 caught viable mutants and 344 unviable mutants.
 - `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
 
 ## Quick start
@@ -22,6 +22,18 @@ Verified on 2026-11-02:
 export DEEPSEEK_API_KEY=...
 cargo run -p dsh-cli --bin dsh -- run "read Cargo.toml and summarize the workspace"
 ```
+
+Use any Messages-compatible endpoint by declaring a route. No `DEEPSEEK_*` variable is read for a route that is not the built-in `deepseek` one:
+
+```sh
+export DSH_PROVIDERS='[{"name":"local-gw","base_url":"http://127.0.0.1:1234","model":"qwen3-coder","api_key_env":"LOCAL_GW_KEY"}]'
+export LOCAL_GW_KEY=...
+cargo run -p dsh-cli --bin dsh -- run "say hello"
+```
+
+Store the key once instead of exporting it by omitting `api_key_env` and running `dsh auth set local-gw`.
+
+When several routes are declared and none is selected, `dsh run` fails with `no provider selected`. Inspection commands such as `dsh sessions`, `dsh auth`, `dsh telemetry`, `dsh schedules list`, and `dsh tools` still work, because they do not need a model route. `dsh config` prints the whole table and reports `"provider": null` with `"provider_error"` until a route is selected.
 
 Pipe a task when it is long:
 
@@ -66,6 +78,7 @@ cargo run -p dsh-cli --bin dsh -- sdk
 | `dsh run --cwd <path>` | Set the session working directory. |
 | `dsh run --permission-mode <mode>` | `read-only`, `workspace-write`, or `danger-full-access`. |
 | `dsh run --model <id>` | Override the route model. |
+| `dsh run --provider <name>` | Select a configured route for this run. |
 | `dsh run --max-steps <n>` | Bound the steps in one turn. |
 | `dsh sessions list` | List stored sessions. |
 | `dsh sessions show <id>` | Print one session's durable event log. |
@@ -80,7 +93,7 @@ cargo run -p dsh-cli --bin dsh -- sdk
 | `dsh auth remove <provider>` | Remove a stored provider secret. |
 | `dsh telemetry` | Print local run counters. |
 | `dsh tools` | List the model-facing tool registry. |
-| `dsh config` | Print effective configuration without secrets. |
+| `dsh config` | Print effective configuration and the provider table without secrets. |
 | `dsh web` | Serve the browser client on `127.0.0.1:3080`. |
 | `dsh sdk` | Serve the JSON-RPC SDK on stdio. |
 
@@ -90,10 +103,12 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | none | Credential for the Messages API. Or run `dsh auth set deepseek`. |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/anthropic` | Messages-compatible root. |
-| `DEEPSEEK_MODEL` | `deepseek-flash` | Route model id. |
-| `DSH_API_KEY_ENV` | `DEEPSEEK_API_KEY` | Alternate credential variable name. |
+| `DSH_PROVIDERS` | none | JSON array of provider routes: `name`, `base_url`, `model`, optional `api_key_env`. |
+| `DSH_PROVIDER` | The built-in `deepseek` route when no route is configured, otherwise the sole configured route | Route to use. Required when two or more routes are configured. |
+| `DEEPSEEK_API_KEY` | none | Credential for the built-in `deepseek` route. Or run `dsh auth set deepseek`. |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/anthropic` | Built-in route's Messages root. |
+| `DEEPSEEK_MODEL` | `deepseek-flash` | Built-in route's model id. |
+| `DSH_API_KEY_ENV` | `DEEPSEEK_API_KEY` | Built-in route's credential variable name. |
 | `DSH_MAX_TOKENS` | `8192` | Per-request output cap. |
 | `DSH_MAX_STEPS` | `24` | Step budget for one turn. |
 | `DSH_MAX_PARALLEL_TOOLS` | `4` | Concurrent concurrency-safe tools. |
@@ -117,7 +132,7 @@ The workspace is eighteen crates. Dependencies point downward only.
 |---|---|
 | `dsh-core` | Domain types, capability traits, permission policy, plugin host. |
 | `dsh-session` | SQLite append-only session store. |
-| `dsh-llm` | DeepSeek Messages adapter, SSE framing, request translation, retry policy. |
+| `dsh-llm` | Messages adapter for any compatible route, SSE framing, request translation, retry policy. |
 | `dsh-tools` | Model-facing tools and their plugin. |
 | `dsh-jobs` | Background shell job tools. |
 | `dsh-schedule` | Durable scheduled follow-ups and their tools. |
@@ -144,7 +159,7 @@ The default permission mode is `workspace-write`. Filesystem tools resolve paths
 
 Set `DSH_SANDBOX=bubblewrap` to wrap `bash` execution in a bubblewrap mount namespace with a read-only root and a writable session directory. The terminal tools remain process-local PTYs and are not wrapped yet.
 
-The credential fallback reads `$DSH_HOME/credentials.json`, written with mode `0600`. An environment key takes precedence over a stored one.
+The credential fallback reads `$DSH_HOME/credentials.json`, written with mode `0600` and keyed by route name. The variable a route names in `api_key_env` takes precedence over the stored secret; a route without one reads only the stored secret, so a custom route never picks up the `deepseek` credential.
 
 Tool panics are contained and returned as tool errors, so the matching tool result is always settled in the log.
 

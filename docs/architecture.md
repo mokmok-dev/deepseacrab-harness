@@ -18,7 +18,7 @@ dsh-cli
   ├── dsh-terminal -> dsh-core
   ├── dsh-lsp      -> dsh-core
   ├── dsh-sandbox  -> dsh-core
-  ├── dsh-credentials -> none
+  ├── dsh-credentials -> dsh-core
   ├── dsh-ssh      -> dsh-core
   ├── dsh-telemetry -> dsh-core
   ├── dsh-mcp      -> dsh-core
@@ -38,6 +38,7 @@ No adapter crate depends on another adapter. The agent depends only on the trait
 - `EventRecord` pairs a fact with its sequence and wall-clock time.
 - `ToolSchema` is the model-facing declaration; `ToolOutcome` is the normalized result.
 - `LlmRequest` and `StreamEvent` are provider-neutral. A provider translates its wire format at the edge.
+- `ProviderTable` pairs the built-in `deepseek` route with the routes declared in `DSH_PROVIDERS` and marks the active one. Only the table constructor can create it, so every route is validated once, at the configuration boundary. When a route is selected, the active route is one of the entries. A table with several routes and no selection has no active route: commands that need a model route require one, while inspection commands do not.
 
 `derive_messages` projects the event log into model history. Lifecycle markers disappear; message facts keep their order. The projection is the only way the loop builds a request, so a resume reads exactly the history the model saw.
 
@@ -49,7 +50,7 @@ No adapter crate depends on another adapter. The agent depends only on the trait
 - Tools are name-keyed and duplicate names are rejected.
 - Every contribution records an undo effect.
 
-If a later plugin fails, the effects run in reverse order and the runtime is not produced. The CLI composes three plugins: `sqlite-session-store`, `deepseek`, and `tools`. Tests compose mocks and assert both the produced surface and the rollback order.
+If a later plugin fails, the effects run in reverse order and the runtime is not produced. The CLI composes three plugins: `sqlite-session-store`, `provider`, and `tools`. The `provider` plugin reads the active route from the configuration and builds the Messages adapter for it, so the route is data rather than a compile-time choice. Tests compose mocks and assert both the produced surface and the rollback order.
 
 The composition is compile-time. Upstream Cordis loads plugins from YAML at boot; this rewrite deliberately uses Rust values so a deployment cannot mount code the binary does not contain. The seam is the same: swapping a provider or a store changes the whole product without touching the loop.
 
@@ -116,7 +117,7 @@ Set `DSH_SANDBOX=bubblewrap` to route `bash` through `dsh-sandbox`. The provider
 
 `apply_patch` pipes a unified diff to `git apply` in the session directory. `create_worktree` runs `git worktree add` for a validated branch under `.worktrees/<branch>`, then appends a `working_directory_changed` fact so later steps execute in the new checkout.
 
-`dsh-credentials` stores a JSON object of provider name to secret at `$DSH_HOME/credentials.json`. Writes go through a sibling temp file with mode `0600` and an atomic rename. The CLI's `auth` commands are the only writers, and the DeepSeek plugin falls back to the stored `deepseek` key when the environment variable is empty.
+`dsh-credentials` stores a JSON object of provider name to secret at `$DSH_HOME/credentials.json`. Writes go through a sibling temp file with mode `0600` and an atomic rename. The CLI's `auth` commands are the only writers. The provider plugin resolves the active route's key from the variable named in `api_key_env`, then falls back to the secret stored under the route's name, so the stored `deepseek` key is never used by another route. The accepted name charset is defined once in `dsh-core` and reused by the store.
 
 `dsh-ssh` parses named hosts from `DSH_SSH_HOSTS` and exposes `ssh_run`. The remote command is one argv element after `--`, so it never passes through a local shell; BatchMode, a connect timeout, a wall-clock limit, and 64 KiB stream caps bound the call. `dsh-telemetry` keeps local run counters in `$DSH_HOME/telemetry.json`, and `dsh telemetry` prints the snapshot.
 
@@ -132,7 +133,7 @@ The policy is lexical. It does not resolve symlinks, so a symlink inside the wor
 
 ## Model adapter
 
-`dsh-llm` speaks the DeepSeek Messages API:
+`dsh-llm` speaks the Messages API, which is the dialect the built-in `deepseek` route and any route declared in `DSH_PROVIDERS` must serve. A route supplies its own name, base URL, model, and credential, so the adapter is not tied to one vendor:
 
 - System text is the top-level `system` field.
 - User text, assistant text/reasoning/tool calls, and tool results map to Messages content blocks.
@@ -141,6 +142,7 @@ The policy is lexical. It does not resolve symlinks, so a symlink inside the wor
 - The request is validated for `max_tokens`, temperature, stop sequences, and empty tool names.
 - The response is SSE. `SseParser` keeps incomplete bytes buffered and only dispatches blank-line-terminated frames. It accepts LF and CRLF, multi-line data, comments, event names, and arbitrary transport chunk boundaries.
 - The translator maps `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, and `message_stop` into `StreamEvent`. It validates ordering and accumulates cumulative usage.
+- The adapter carries the route name, so diagnostics, `ProviderId`, and every durable assistant message record the route that served the answer.
 - Retry policy is pure: retryable codes, attempt bounds, and capped exponential delay.
 
 The adapter rejects cancellation by returning a transport error, which the loop records as a cancelled turn. The stream itself observes the token between frames.
@@ -152,9 +154,10 @@ The adapter rejects cancellation by returning a transport error, which the loop 
 - `--json` serializes `RunEvent` values with serde. The stream opens with `session`, carries `text`, `thinking`, `tool_call`, `tool_result`, and `error`, and closes with `final`.
 - The plain sink sends reasoning and tool progress to stderr and the final answer to stdout.
 - Session inspection reads the same store the agent writes.
-- `config` prints effective values and only a boolean for the credential.
+- `config` prints the active route, the full provider table, and only a boolean per credential. When no route is selected it prints `null` for the route fields and reports the `Unselected` error under `provider_error`.
+- `--provider` and `--model` are parse inputs, so an unknown route is rejected by the same boundary that validates `DSH_PROVIDERS` instead of mutating a validated configuration afterwards.
 
-Configuration parsing is pure through `Config::from_lookup`; the process environment is read only in the CLI boundary adapter. This keeps tests independent of process state.
+Configuration parsing is pure through `Config::from_lookup_with`; the process environment is read only in the CLI boundary adapter. This keeps tests independent of process state.
 
 ## External tools
 
