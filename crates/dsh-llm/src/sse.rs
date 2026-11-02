@@ -73,7 +73,7 @@ impl SseParser {
 
 fn decode_frame(frame: &[u8]) -> Result<Option<SseEvent>, LlmError> {
     let text = std::str::from_utf8(frame)
-        .map_err(|_| LlmError::malformed("DeepSeek Messages SSE frame is not valid UTF-8"))?;
+        .map_err(|_| LlmError::malformed("Messages SSE frame is not valid UTF-8"))?;
     let mut event = None;
     let mut data: Vec<&str> = Vec::new();
     for line in text.split('\n') {

@@ -51,6 +51,9 @@ pub struct RunArgs {
     /// Override the route model.
     #[arg(long)]
     pub model: Option<String>,
+    /// Provider route to use for this run.
+    #[arg(long, value_name = "NAME")]
+    pub provider: Option<String>,
     /// Working directory for the session.
     #[arg(long)]
     pub cwd: Option<PathBuf>,
@@ -146,7 +149,7 @@ pub struct AuthArgs {
 pub enum AuthCommand {
     /// Store a provider secret read from stdin.
     Set {
-        /// Provider name, such as `deepseek`.
+        /// Provider name, such as `local-gw`.
         provider: String,
     },
     /// List providers with stored secrets.
@@ -183,6 +186,8 @@ mod tests {
             "session-1",
             "--model",
             "deepseek-v4-pro",
+            "--provider",
+            "local-gw",
             "--cwd",
             "/tmp",
             "--permission-mode",
@@ -198,6 +203,7 @@ mod tests {
         assert!(args.json);
         assert_eq!(args.session_id.as_deref(), Some("session-1"));
         assert_eq!(args.model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(args.provider.as_deref(), Some("local-gw"));
         assert_eq!(args.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
         assert_eq!(args.permission_mode.as_deref(), Some("read-only"));
         assert_eq!(args.max_steps, Some(3));

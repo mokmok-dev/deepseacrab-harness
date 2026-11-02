@@ -1,6 +1,6 @@
 [package]
 name = "dsh-llm"
-description = "DeepSeek Messages streaming adapter for the DeepSeek Harness Rust rewrite"
+description = "Messages streaming adapter for the DeepSeek Harness Rust rewrite"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

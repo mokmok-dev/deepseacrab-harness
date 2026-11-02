@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Longest accepted provider name, in bytes.
-pub const MAX_PROVIDER_NAME_BYTES: usize = 64;
+pub const MAX_PROVIDER_NAME_BYTES: usize = dsh_core::MAX_PROVIDER_NAME_BYTES;
 
 const TEMPORARY_SUFFIX: &str = ".tmp";
 
@@ -159,12 +159,7 @@ fn temporary_path(path: &Path) -> PathBuf {
 }
 
 fn validate_provider(provider: &str) -> Result<(), CredentialError> {
-    let accepted = !provider.is_empty()
-        && provider.len() <= MAX_PROVIDER_NAME_BYTES
-        && provider
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
-    if accepted {
+    if dsh_core::valid_provider_name(provider) {
         return Ok(());
     }
     Err(CredentialError::InvalidProvider {

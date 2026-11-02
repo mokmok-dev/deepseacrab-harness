@@ -340,8 +340,8 @@ pub type LlmStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + 
 /// A model route that can stream one call.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Stable route name used in diagnostics.
-    fn name(&self) -> &'static str;
+    /// Stable route name used in diagnostics and durable messages.
+    fn name(&self) -> &str;
 
     /// Start one stream. The returned stream owns the request and observes
     /// `cancel` between frames.

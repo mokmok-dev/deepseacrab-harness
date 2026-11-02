@@ -1,4 +1,4 @@
-//! Wire types and pure request/stream translation for the `DeepSeek` Messages API.
+//! Wire types and pure request/stream translation for the Messages API.
 
 use crate::sse::SseEvent;
 use dsh_core::{
@@ -466,7 +466,7 @@ impl Translator {
             Ok(())
         } else {
             Err(LlmError::stream_closed(
-                "DeepSeek Messages stream ended before message_stop",
+                "Messages stream ended before message_stop",
             ))
         }
     }
@@ -477,7 +477,7 @@ impl Translator {
             return Ok(Vec::new());
         }
         let data: Value = serde_json::from_str(&event.data)
-            .map_err(|_| LlmError::malformed("DeepSeek Messages SSE data is not valid JSON"))?;
+            .map_err(|_| LlmError::malformed("Messages SSE data is not valid JSON"))?;
         let object = data
             .as_object()
             .ok_or_else(|| malformed("expected a JSON object"))?;
@@ -567,7 +567,7 @@ impl Translator {
             }
             other => {
                 return Err(LlmError::unsupported(format!(
-                    "DeepSeek Messages cannot represent response block {other}"
+                    "Messages cannot represent response block {other}"
                 )));
             }
         };
@@ -672,9 +672,7 @@ impl Translator {
             return Err(malformed("message_stop with open content blocks"));
         }
         if self.blocks.is_empty() && reason == FinishReason::Stop {
-            return Err(LlmError::empty_response(
-                "DeepSeek Messages returned no content",
-            ));
+            return Err(LlmError::empty_response("Messages returned no content"));
         }
         self.finished = true;
         Ok(vec![
@@ -693,7 +691,7 @@ impl Translator {
 }
 
 fn malformed(detail: impl Into<String>) -> LlmError {
-    LlmError::malformed(format!("DeepSeek Messages stream: {}", detail.into()))
+    LlmError::malformed(format!("Messages stream: {}", detail.into()))
 }
 
 fn required_str<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, LlmError> {
@@ -735,7 +733,7 @@ fn in_band_error(event: &Map<String, Value>) -> LlmError {
     let message = detail
         .and_then(|error| error.get("message"))
         .and_then(Value::as_str)
-        .unwrap_or("DeepSeek Messages stream error");
+        .unwrap_or("Messages stream error");
     match detail
         .and_then(|error| error.get("type"))
         .and_then(Value::as_str)
@@ -1811,7 +1809,7 @@ mod tests {
         })])
         .expect_err("server");
         assert_eq!(error.code, LlmErrorCode::Server);
-        assert_eq!(error.message, "DeepSeek Messages stream error");
+        assert_eq!(error.message, "Messages stream error");
     }
 
     #[test]

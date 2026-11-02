@@ -4,12 +4,12 @@
 //! Local provider credentials for the harness.
 //!
 //! Secrets live in one JSON object keyed by provider name. The CLI's `auth`
-//! commands own the file, and the `DeepSeek` provider reads it as the fallback
-//! for a missing API key environment variable.
+//! commands own the file, and the provider plugin reads it as the fallback for
+//! a route whose API-key variable is unset or missing.
 
 mod store;
 
-pub use store::{CredentialError, CredentialStore};
+pub use store::{CredentialError, CredentialStore, MAX_PROVIDER_NAME_BYTES};
 
 #[cfg(test)]
 mod tests {

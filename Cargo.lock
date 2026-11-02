@@ -542,6 +542,7 @@ dependencies = [
 name = "dsh-credentials"
 version = "2026.11.1"
 dependencies = [
+ "dsh-core",
  "proptest",
  "serde",
  "serde_json",

@@ -8,18 +8,21 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use dsh_agent::{AgentConfig, AgentLoop, EventSink, RunEvent};
 use dsh_core::{
-    Clock, Config, Env, EventSeq, ModelId, PermissionMode, Plugin, PluginContext, PluginError,
-    Runtime, SessionEvent, SessionHeader, SessionId, SessionStore, SystemClock, SystemEnv,
-    TurnOutcome, compose,
+    Clock, Config, ConfigOverrides, Env, EventSeq, ModelId, PermissionMode, Plugin, PluginContext,
+    PluginError, ProviderConfig, Runtime, SessionEvent, SessionHeader, SessionId, SessionStore,
+    SystemClock, SystemEnv, TurnOutcome, compose,
 };
-use dsh_llm::{DeepSeekConfig, DeepSeekProvider};
+use dsh_llm::{MessagesConfig, MessagesProvider};
 use dsh_session::SqliteSessionStore;
 use dsh_tools::ToolsPlugin;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
+
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Parse the command line and dispatch.
 pub async fn run() -> anyhow::Result<ExitCode> {
@@ -38,10 +41,11 @@ pub async fn run() -> anyhow::Result<ExitCode> {
 }
 
 async fn run_task(args: RunArgs) -> anyhow::Result<ExitCode> {
-    let mut config = config_from_env()?;
-    if let Some(model) = args.model {
-        config.model = model;
-    }
+    let overrides = ConfigOverrides {
+        provider: args.provider,
+        model: args.model,
+    };
+    let mut config = config_from_env_with(&overrides)?;
     if let Some(raw) = args.permission_mode {
         config.permission = PermissionMode::parse(&raw).ok_or_else(|| {
             anyhow!(
@@ -55,6 +59,7 @@ async fn run_task(args: RunArgs) -> anyhow::Result<ExitCode> {
         }
         config.max_steps = steps;
     }
+    config.active_provider()?;
 
     let cwd = resolve_cwd(args.cwd)?;
     let task = read_task(&args.task).await?;
@@ -121,8 +126,16 @@ fn config_from_env() -> anyhow::Result<Config> {
     Ok(Config::from_lookup(|key| std::env::var(key).ok())?)
 }
 
+fn config_from_env_with(overrides: &ConfigOverrides) -> anyhow::Result<Config> {
+    Ok(Config::from_lookup_with(
+        |key| std::env::var(key).ok(),
+        overrides,
+    )?)
+}
+
 async fn web(bind: String) -> anyhow::Result<ExitCode> {
     let config = config_from_env()?;
+    config.active_provider()?;
     let cwd = resolve_cwd(None)?;
     let env = SystemEnv;
     let runtime = build_runtime(&config, &env)?;
@@ -157,6 +170,7 @@ async fn web(bind: String) -> anyhow::Result<ExitCode> {
 
 async fn sdk() -> anyhow::Result<ExitCode> {
     let config = config_from_env()?;
+    config.active_provider()?;
     let cwd = resolve_cwd(None)?;
     let env = SystemEnv;
     let runtime = build_runtime(&config, &env)?;
@@ -190,7 +204,7 @@ async fn sdk() -> anyhow::Result<ExitCode> {
 
 fn agent_config(config: &Config, cwd: PathBuf) -> anyhow::Result<AgentConfig> {
     Ok(AgentConfig {
-        model: ModelId::parse(&config.model)?,
+        model: ModelId::parse(&config.active_provider()?.model)?,
         system_prompt: config.system_prompt.clone(),
         max_tokens: config.max_tokens,
         effort: config.effort,
@@ -253,7 +267,7 @@ fn add_delegation_tools(
 fn build_runtime(config: &Config, env: &dyn Env) -> anyhow::Result<Runtime> {
     let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(SqliteStorePlugin),
-        Box::new(DeepSeekPlugin),
+        Box::new(ProviderPlugin),
         Box::new(ToolsPlugin),
         Box::new(dsh_jobs::JobsPlugin),
         Box::new(dsh_schedule::SchedulePlugin),
@@ -279,42 +293,57 @@ impl Plugin for SqliteStorePlugin {
     }
 }
 
-struct DeepSeekPlugin;
+struct ProviderPlugin;
 
-impl Plugin for DeepSeekPlugin {
+impl Plugin for ProviderPlugin {
     fn name(&self) -> &'static str {
-        "deepseek"
+        "provider"
     }
 
     fn install(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
         let config = context.config();
-        let api_key = if let Some(key) = config.api_key(context.env()) {
-            key
-        } else {
-            let store = dsh_credentials::CredentialStore::new(config.home.join("credentials.json"));
-            match store.get("deepseek") {
-                Ok(Some(key)) => key,
-                Ok(None) => {
-                    return Err(PluginError::Failed(format!(
-                        "MISSING_CREDENTIAL: set {} or run `dsh auth set deepseek`",
-                        config.api_key_env
-                    )));
-                }
-                Err(error) => {
-                    return Err(PluginError::Failed(format!(
-                        "cannot read stored credentials: {error}"
-                    )));
-                }
-            }
-        };
-        let provider = DeepSeekProvider::new(DeepSeekConfig {
-            base_url: config.base_url.clone(),
-            api_key,
-            timeout: std::time::Duration::from_secs(300),
+        let route = config
+            .active_provider()
+            .map_err(|error| PluginError::Failed(error.to_string()))?;
+        let provider = MessagesProvider::new(MessagesConfig {
+            name: route.name.clone(),
+            base_url: route.base_url.clone(),
+            api_key: resolve_credential(route, config, context.env())?,
+            timeout: PROVIDER_TIMEOUT,
         })
         .map_err(|error| PluginError::Failed(error.to_string()))?;
         context.set_provider(Arc::new(provider))
     }
+}
+
+fn resolve_credential(
+    route: &ProviderConfig,
+    config: &Config,
+    env: &dyn Env,
+) -> Result<String, PluginError> {
+    if let Some(key) = route.api_key(env) {
+        return Ok(key);
+    }
+    let store = dsh_credentials::CredentialStore::new(config.home.join("credentials.json"));
+    match store.get(&route.name) {
+        Ok(Some(key)) => Ok(key),
+        Ok(None) => Err(PluginError::Failed(missing_credential_message(route))),
+        Err(error) => Err(PluginError::Failed(format!(
+            "cannot read stored credentials: {error}"
+        ))),
+    }
+}
+
+fn missing_credential_message(route: &ProviderConfig) -> String {
+    route.api_key_env.as_deref().map_or_else(
+        || format!("MISSING_CREDENTIAL: run `dsh auth set {}`", route.name),
+        |var| {
+            format!(
+                "MISSING_CREDENTIAL: set {var} or run `dsh auth set {}`",
+                route.name
+            )
+        },
+    )
 }
 
 fn resolve_cwd(raw: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -511,6 +540,7 @@ async fn schedules(args: SchedulesArgs) -> anyhow::Result<ExitCode> {
                 println!("no due schedules");
                 return Ok(ExitCode::SUCCESS);
             }
+            config.active_provider()?;
             let env = SystemEnv;
             let runtime = build_runtime(&config, &env)?;
             let cwd = resolve_cwd(None)?;
@@ -602,16 +632,39 @@ fn tools() -> anyhow::Result<ExitCode> {
 fn show_config() -> anyhow::Result<ExitCode> {
     let config = config_from_env()?;
     let env = SystemEnv;
-    let api_key_present = config.api_key(&env).is_some();
+    let store = dsh_credentials::CredentialStore::new(config.home.join("credentials.json"));
+    let (stored, credential_error) = match store.load() {
+        Ok(stored) => (stored, None),
+        Err(error) => (std::collections::BTreeMap::new(), Some(error.to_string())),
+    };
+    let present =
+        |route: &ProviderConfig| route.api_key(&env).is_some() || stored.contains_key(&route.name);
+    let route_value = |route: &ProviderConfig| {
+        serde_json::json!({
+            "name": route.name.as_str(),
+            "model": route.model.as_str(),
+            "base_url": route.base_url.as_str(),
+            "api_key_env": route.api_key_env.as_deref(),
+            "api_key_present": present(route),
+        })
+    };
+    let providers: Vec<_> = config.providers().iter().map(route_value).collect();
     let home = config.home.display().to_string();
     let database = config.database_path().display().to_string();
     let effort = config.effort.as_str();
     let permission = config.permission.as_str();
-    let value = serde_json::json!({
-        "model": config.model,
-        "base_url": config.base_url,
-        "api_key_env": config.api_key_env,
-        "api_key_present": api_key_present,
+    let active = config.active_provider();
+    let (selected, provider_error) = match active {
+        Ok(route) => (Some(route), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    let mut value = serde_json::json!({
+        "provider": selected.map(|route| route.name.as_str()),
+        "model": selected.map(|route| route.model.as_str()),
+        "base_url": selected.map(|route| route.base_url.as_str()),
+        "api_key_env": selected.and_then(|route| route.api_key_env.as_deref()),
+        "api_key_present": selected.is_some_and(present),
+        "providers": providers,
         "max_tokens": config.max_tokens,
         "effort": effort,
         "max_steps": config.max_steps,
@@ -624,6 +677,12 @@ fn show_config() -> anyhow::Result<ExitCode> {
         "home": home,
         "database": database,
     });
+    if let Some(error) = provider_error {
+        value["provider_error"] = serde_json::Value::String(error);
+    }
+    if let Some(error) = credential_error {
+        value["credential_error"] = serde_json::Value::String(error);
+    }
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(ExitCode::SUCCESS)
 }
@@ -807,7 +866,49 @@ mod tests {
     #[test]
     fn plugin_names_are_stable() {
         assert_eq!(SqliteStorePlugin.name(), "sqlite-session-store");
-        assert_eq!(DeepSeekPlugin.name(), "deepseek");
+        assert_eq!(ProviderPlugin.name(), "provider");
+    }
+
+    #[test]
+    fn a_missing_credential_message_names_the_route_and_its_variable() {
+        let route = ProviderConfig {
+            name: "deepseek".to_string(),
+            base_url: "https://api.deepseek.com/anthropic".to_string(),
+            model: "deepseek-flash".to_string(),
+            api_key_env: Some("DEEPSEEK_API_KEY".to_string()),
+        };
+        assert_eq!(
+            missing_credential_message(&route),
+            "MISSING_CREDENTIAL: set DEEPSEEK_API_KEY or run `dsh auth set deepseek`"
+        );
+        assert_eq!(
+            missing_credential_message(&ProviderConfig {
+                api_key_env: None,
+                ..route
+            }),
+            "MISSING_CREDENTIAL: run `dsh auth set deepseek`"
+        );
+    }
+
+    #[test]
+    fn a_route_key_comes_from_its_environment_variable() {
+        struct MapEnv;
+        impl Env for MapEnv {
+            fn var(&self, key: &str) -> Option<String> {
+                (key == "GW_KEY").then(|| "env-secret".to_string())
+            }
+        }
+        let config = Config::default();
+        let route = ProviderConfig {
+            name: "gw".to_string(),
+            base_url: "http://127.0.0.1:1".to_string(),
+            model: "m".to_string(),
+            api_key_env: Some("GW_KEY".to_string()),
+        };
+        assert_eq!(
+            resolve_credential(&route, &config, &MapEnv).expect("environment key"),
+            "env-secret"
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
     clippy::module_name_repetitions
 )]
 
-//! `DeepSeek` Messages API adapter.
+//! Messages API adapter for any Messages-compatible endpoint.
 //!
 //! The network surface is deliberately small: one POST, one byte stream, and
 //! a translator that turns decoded SSE frames into [`dsh_core::StreamEvent`]s.
@@ -29,9 +29,11 @@ pub use wire::{
     WireThinking, WireTool, serialize_request,
 };
 
-/// Endpoint and credential settings for one `DeepSeek` route.
+/// Endpoint and credential settings for one Messages route.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeepSeekConfig {
+pub struct MessagesConfig {
+    /// Route name stamped into diagnostics and durable messages.
+    pub name: String,
     /// Messages API base URL, with or without a trailing `/v1`.
     pub base_url: String,
     /// Credential sent as `x-api-key`.
@@ -40,16 +42,16 @@ pub struct DeepSeekConfig {
     pub timeout: Duration,
 }
 
-/// `DeepSeek` Messages provider backed by one `reqwest` client.
+/// Messages provider backed by one `reqwest` client.
 #[derive(Debug, Clone)]
-pub struct DeepSeekProvider {
+pub struct MessagesProvider {
     client: reqwest::Client,
-    config: DeepSeekConfig,
+    config: MessagesConfig,
 }
 
-impl DeepSeekProvider {
+impl MessagesProvider {
     /// Validate configuration and build the shared HTTP client.
-    pub fn new(config: DeepSeekConfig) -> Result<Self, LlmError> {
+    pub fn new(config: MessagesConfig) -> Result<Self, LlmError> {
         if config.base_url.trim().trim_end_matches('/').is_empty() {
             return Err(LlmError::invalid_request("base_url must not be empty"));
         }
@@ -86,9 +88,9 @@ impl DeepSeekProvider {
 }
 
 #[async_trait::async_trait]
-impl LlmProvider for DeepSeekProvider {
-    fn name(&self) -> &'static str {
-        "deepseek"
+impl LlmProvider for MessagesProvider {
+    fn name(&self) -> &str {
+        &self.config.name
     }
 
     async fn stream(
@@ -131,11 +133,7 @@ impl LlmProvider for DeepSeekProvider {
 }
 
 fn cancelled() -> LlmError {
-    LlmError::new(
-        LlmErrorCode::Transport,
-        "DeepSeek Messages request cancelled",
-        false,
-    )
+    LlmError::new(LlmErrorCode::Transport, "Messages request cancelled", false)
 }
 
 struct StreamState {
@@ -236,16 +234,17 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    fn config() -> DeepSeekConfig {
-        DeepSeekConfig {
+    fn config() -> MessagesConfig {
+        MessagesConfig {
+            name: "deepseek".to_string(),
             base_url: "https://api.deepseek.com/anthropic".to_string(),
             api_key: "secret".to_string(),
             timeout: Duration::from_secs(30),
         }
     }
 
-    fn provider(base_url: &str) -> DeepSeekProvider {
-        DeepSeekProvider::new(DeepSeekConfig {
+    fn provider(base_url: &str) -> MessagesProvider {
+        MessagesProvider::new(MessagesConfig {
             base_url: base_url.to_string(),
             ..config()
         })
@@ -273,41 +272,46 @@ mod tests {
     }
 
     #[test]
-    fn provider_name_is_stable() {
-        assert_eq!(provider("https://example.com").name(), "deepseek");
+    fn provider_name_comes_from_its_config() {
+        let provider = MessagesProvider::new(MessagesConfig {
+            name: "gw".to_string(),
+            ..config()
+        })
+        .expect("provider");
+        assert_eq!(provider.name(), "gw");
     }
 
     #[test]
     fn configuration_is_validated() {
-        let error = DeepSeekProvider::new(DeepSeekConfig {
+        let error = MessagesProvider::new(MessagesConfig {
             base_url: "   ".to_string(),
             ..config()
         })
         .expect_err("empty base");
         assert_eq!(error.code, LlmErrorCode::InvalidRequest);
 
-        let error = DeepSeekProvider::new(DeepSeekConfig {
+        let error = MessagesProvider::new(MessagesConfig {
             base_url: "///".to_string(),
             ..config()
         })
         .expect_err("slash base");
         assert_eq!(error.code, LlmErrorCode::InvalidRequest);
 
-        let error = DeepSeekProvider::new(DeepSeekConfig {
+        let error = MessagesProvider::new(MessagesConfig {
             base_url: "not a url".to_string(),
             ..config()
         })
         .expect_err("invalid url");
         assert_eq!(error.code, LlmErrorCode::InvalidRequest);
 
-        let error = DeepSeekProvider::new(DeepSeekConfig {
+        let error = MessagesProvider::new(MessagesConfig {
             api_key: String::new(),
             ..config()
         })
         .expect_err("missing key");
         assert_eq!(error.code, LlmErrorCode::MissingCredential);
 
-        let error = DeepSeekProvider::new(DeepSeekConfig {
+        let error = MessagesProvider::new(MessagesConfig {
             timeout: Duration::ZERO,
             ..config()
         })
