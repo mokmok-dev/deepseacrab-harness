@@ -10,7 +10,7 @@ This rewrite covers the headless harness. It is eighteen crates and 40 first-par
 - `nix flake check`: clippy, test, treefmt, and pre-commit pass.
 - `cargo-mutants`: 1378 mutants, 1031 caught, 347 unviable, 0 missed, 0 timeouts.
 
-The counts come from per-crate mutation runs. The command is `./scripts/mutants.sh`.
+The counts come from separate mutation runs on each crate. Run `nix run .#mutants` to run the same check across the workspace.
 
 ## Implemented surface
 
@@ -42,8 +42,8 @@ These are separate programs rather than one missing slice.
 ## How to verify a change
 
 ```sh
-./scripts/verify.sh
-./scripts/mutants.sh
+nix flake check
+nix run .#mutants
 ```
 
-`verify.sh` runs the formatting, clippy, workspace test, and Nix checks. `mutants.sh` runs cargo-mutants inside a transient systemd scope with memory limits when available.
+`nix flake check` runs the formatting, clippy, workspace test, and pre-commit checks. The `mutants` app runs cargo-mutants inside a transient systemd scope with memory limits when the user manager is reachable.

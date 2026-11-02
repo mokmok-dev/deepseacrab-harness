@@ -44,6 +44,43 @@
             strictDeps = true;
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          linkerPackages = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+            with pkgs;
+            [
+              clang
+              mold
+            ]
+          );
+          linkerEnv = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="clang"
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="clang"
+          '';
+          mutants = pkgs.writeShellApplication {
+            name = "mutants";
+            runtimeInputs = [
+              pkgs.cargo-mutants
+              pkgs.coreutils
+              pkgs.git
+              pkgs.sccache
+              rustToolchain
+            ]
+            ++ linkerPackages;
+            text = ''
+              export RUSTC_WRAPPER="${pkgs.sccache}/bin/sccache"
+              ${linkerEnv}
+              jobs="''${JOBS:-4}"
+              timeout="''${TIMEOUT:-300}"
+              mutants_cmd=(cargo mutants --workspace --jobs "$jobs" --timeout "$timeout" --baseline run "$@")
+
+              if command -v systemd-run >/dev/null 2>&1 &&
+                systemd-run --user --scope -p MemoryMax=80% -p MemoryHigh=70% true >/dev/null 2>&1; then
+                exec systemd-run --user --scope -p MemoryMax=80% -p MemoryHigh=70% "''${mutants_cmd[@]}"
+              fi
+
+              exec "''${mutants_cmd[@]}"
+            '';
+          };
         in
         {
           _module.args = {
@@ -78,6 +115,8 @@
             );
           };
 
+          packages.mutants = mutants;
+
           devShells.default = pkgs.mkShellNoCC {
             inputsFrom = [ config.pre-commit.devShell ];
 
@@ -87,21 +126,11 @@
                 rustToolchain
                 sccache
               ])
-              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
-                with pkgs;
-                [
-                  clang
-                  mold
-                ]
-              );
+              ++ linkerPackages;
 
             shellHook = ''
               export RUSTC_WRAPPER="${pkgs.sccache}/bin/sccache"
-              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-                export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
-                export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="clang"
-                export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="clang"
-              ''}
+              ${linkerEnv}
             '';
           };
 
