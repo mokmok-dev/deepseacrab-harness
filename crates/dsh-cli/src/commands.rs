@@ -1,7 +1,8 @@
 //! Command implementations.
 
 use crate::cli::{
-    Cli, Command, RunArgs, SchedulesArgs, SchedulesCommand, SessionsArgs, SessionsCommand,
+    AuthArgs, AuthCommand, Cli, Command, RunArgs, SchedulesArgs, SchedulesCommand, SessionsArgs,
+    SessionsCommand,
 };
 use anyhow::{Context, anyhow, bail};
 use clap::Parser;
@@ -17,7 +18,7 @@ use dsh_tools::ToolsPlugin;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
 /// Parse the command line and dispatch.
@@ -27,6 +28,7 @@ pub async fn run() -> anyhow::Result<ExitCode> {
         Command::Run(args) => run_task(args).await,
         Command::Sessions(args) => sessions(args),
         Command::Schedules(args) => schedules(args).await,
+        Command::Auth(args) => auth(args).await,
         Command::Tools => tools(),
         Command::Config => show_config(),
         Command::Web { bind } => web(bind).await,
@@ -274,12 +276,25 @@ impl Plugin for DeepSeekPlugin {
 
     fn install(&self, context: &mut PluginContext<'_>) -> Result<(), PluginError> {
         let config = context.config();
-        let api_key = config.api_key(context.env()).ok_or_else(|| {
-            PluginError::Failed(format!(
-                "MISSING_CREDENTIAL: set {} before running a task",
-                config.api_key_env
-            ))
-        })?;
+        let api_key = if let Some(key) = config.api_key(context.env()) {
+            key
+        } else {
+            let store = dsh_credentials::CredentialStore::new(config.home.join("credentials.json"));
+            match store.get("deepseek") {
+                Ok(Some(key)) => key,
+                Ok(None) => {
+                    return Err(PluginError::Failed(format!(
+                        "MISSING_CREDENTIAL: set {} or run `dsh auth set deepseek`",
+                        config.api_key_env
+                    )));
+                }
+                Err(error) => {
+                    return Err(PluginError::Failed(format!(
+                        "cannot read stored credentials: {error}"
+                    )));
+                }
+            }
+        };
         let provider = DeepSeekProvider::new(DeepSeekConfig {
             base_url: config.base_url.clone(),
             api_key,
@@ -509,6 +524,39 @@ async fn schedules(args: SchedulesArgs) -> anyhow::Result<ExitCode> {
             for run in runs {
                 print!("{}", schedule_run_text(&run));
             }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn auth(args: AuthArgs) -> anyhow::Result<ExitCode> {
+    let config = config_from_env()?;
+    let store = dsh_credentials::CredentialStore::new(config.home.join("credentials.json"));
+    match args.command {
+        AuthCommand::Set { provider } => {
+            let mut secret = String::new();
+            let mut input = tokio::io::BufReader::new(tokio::io::stdin());
+            input
+                .read_line(&mut secret)
+                .await
+                .context("cannot read the secret from stdin")?;
+            let secret = secret.trim_end_matches(['\r', '\n']).to_string();
+            store.set(&provider, &secret)?;
+            println!("stored {provider}");
+        }
+        AuthCommand::List => {
+            let providers = store.providers()?;
+            if providers.is_empty() {
+                println!("no credentials");
+            } else {
+                for provider in providers {
+                    println!("{provider}");
+                }
+            }
+        }
+        AuthCommand::Remove { provider } => {
+            let removed = store.remove(&provider)?;
+            println!("{}", if removed { "removed" } else { "not found" });
         }
     }
     Ok(ExitCode::SUCCESS)

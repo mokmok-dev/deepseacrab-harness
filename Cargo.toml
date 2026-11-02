@@ -15,6 +15,7 @@ members = [
   "crates/dsh-lsp",
   "crates/dsh-sandbox",
   "crates/dsh-team",
+  "crates/dsh-credentials",
 ]
 resolver = "3"
 
@@ -72,6 +73,7 @@ dsh-terminal = { path = "crates/dsh-terminal" }
 dsh-lsp = { path = "crates/dsh-lsp" }
 dsh-sandbox = { path = "crates/dsh-sandbox" }
 dsh-team = { path = "crates/dsh-team" }
+dsh-credentials = { path = "crates/dsh-credentials" }
 
 [workspace.lints.clippy]
 all = "warn"

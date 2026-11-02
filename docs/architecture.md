@@ -18,6 +18,7 @@ dsh-cli
   ├── dsh-terminal -> dsh-core
   ├── dsh-lsp      -> dsh-core
   ├── dsh-sandbox  -> dsh-core
+  ├── dsh-credentials -> none
   ├── dsh-mcp      -> dsh-core
   ├── dsh-web      -> dsh-agent, dsh-core
   └── dsh-sdk      -> dsh-agent, dsh-core
@@ -113,6 +114,8 @@ Set `DSH_SANDBOX=bubblewrap` to route `bash` through `dsh-sandbox`. The provider
 
 `apply_patch` pipes a unified diff to `git apply` in the session directory. `create_worktree` runs `git worktree add` for a validated branch under `.worktrees/<branch>`, then appends a `working_directory_changed` fact so later steps execute in the new checkout.
 
+`dsh-credentials` stores a JSON object of provider name to secret at `$DSH_HOME/credentials.json`. Writes go through a sibling temp file with mode `0600` and an atomic rename. The CLI's `auth` commands are the only writers, and the DeepSeek plugin falls back to the stored `deepseek` key when the environment variable is empty.
+
 `job_*` writes a small job directory under the session workspace. `job_start` redirects the child's streams to files, records the pid, and a waiter thread publishes an atomic status file. `job_list`, `job_output`, and `job_kill` read that durable state.
 
 Path policy lives in `dsh-core`:
@@ -167,4 +170,4 @@ Unit tests sit beside the code they exercise. Integration tests in `dsh-cli/test
 
 Property tests cover the shapes where examples are weak: event round-trips, projection order, SSE chunk splitting, retry delays, path normalization, edit semantics, and batch plans.
 
-`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across fifteen crates, with 900 caught and 313 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.
+`cargo-mutants` runs on every crate. The measured result is 0 missed and 0 timeouts across sixteen crates, with 926 caught and 314 unviable mutants. The mutation gate is intentionally strict: when a mutant exposes a missing observation, the fix is a behavior test, not an exclusion.

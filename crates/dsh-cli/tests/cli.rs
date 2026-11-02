@@ -237,6 +237,67 @@ fn schedules_are_empty_and_do_not_need_a_key_when_nothing_is_due() {
 }
 
 #[test]
+fn auth_set_list_remove_round_trip() {
+    let home = fresh_home();
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["auth", "set", "deepseek"])
+        .write_stdin("test-secret\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("stored deepseek"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["auth", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deepseek"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["auth", "remove", "deepseek"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed"));
+
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["auth", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no credentials"));
+}
+
+#[test]
+fn run_uses_a_stored_credential() {
+    let (port, server) = spawn_sse_server();
+    let home = fresh_home();
+    let cwd = tempfile::tempdir().expect("temporary cwd");
+    dsh()
+        .env("DSH_HOME", home.path())
+        .args(["auth", "set", "deepseek"])
+        .write_stdin("test-key\n")
+        .assert()
+        .success();
+    dsh()
+        .env("DSH_HOME", home.path())
+        .env_remove("DEEPSEEK_API_KEY")
+        .env("DEEPSEEK_BASE_URL", format!("http://127.0.0.1:{port}"))
+        .env("DSH_MAX_STEPS", "1")
+        .args([
+            "run",
+            "--cwd",
+            cwd.path().to_str().expect("utf-8 cwd"),
+            "say hello",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+    server.join().expect("sse server");
+}
+
+#[test]
 fn run_streams_a_local_sse_response() {
     let (port, server) = spawn_sse_server();
     let home = fresh_home();

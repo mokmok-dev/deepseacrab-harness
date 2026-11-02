@@ -20,7 +20,7 @@ All six are verified. See the root README for the measured counts.
 - **M1, foundation: complete.** Session header, fork, export, search, and repair; bounded retry; durable compaction; todo, plan, goal, working-directory, and session-search tools; `apply_patch`, `glob`, `str_replace_editor`, `read_image`, `create_worktree`, and `skill`.
 - **M2, delegation and work: complete for this scope.** `subagent`, `workflow`, `ralph`, the seven team tools, the four `job_*` tools, and the `schedule_*` tools with `schedules run-due` are in.
 - **M3, integrations and execution: partial.** MCP stdio, `web_search`, persistent PTY terminals, the LSP tool, inline image input, and bubblewrap confinement for `bash` are in. SSH, file attachments, browser use, and computer use are not.
-- **M4, surfaces and distribution: partial.** The browser client and the JSON-RPC SDK are in. ACP, the API/BFF, plugin manager and market, stored credentials, telemetry, and i18n are not.
+- **M4, surfaces and distribution: partial.** The browser client, the JSON-RPC SDK, stored credentials, and the `auth` commands are in. ACP, the API/BFF, plugin manager and market, telemetry, and i18n are not.
 - **M5, hardening: pending.** Cross-platform checks, session-format migrations, performance gates, and the remaining snapshot matrix are not done.
 
 The mutation gate is green across all ten crates: 619 caught viable mutants, 209 unviable mutants, and 0 missed or timed out.
@@ -63,7 +63,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | `attachment` | Partial | `read_image` attaches inline PNG, JPEG, WebP, or GIF bytes up to 10 MiB. No file attachments, file API, or image offload. |
 | `spill` | Partial | Hard caps on stream, file, and web body sizes. |
 | `storage`, `workspace` | Partial | `DSH_HOME`, SQLite database, and session working directory. |
-| `feedback`, `identity`, `settings`, `credentials` | Partial | Environment configuration and one credential variable. |
+| `feedback`, `identity`, `settings`, `credentials` | Partial | Environment settings, `auth set/list/remove`, and a `0600` provider credential file. No GUI settings, feedback, identity, or account sign-in. |
 | `acp` | Not ported | |
 | `interaction`, `boot` | Replaced | CLI interaction and composition root. |
 | `sdk` | Partial | Line-delimited JSON-RPC over stdio: `run`, `sessions.list`, `sessions.show`, `tools.list`, `config`. |
@@ -116,6 +116,7 @@ The mutation gate is green across all ten crates: 619 caught viable mutants, 209
 | 2026-11-02 | Sandbox is a command resolver, not a second tool path | `bash` asks the configured provider for a program and arguments, so confinement changes the process it spawns without changing the tool contract. Bubblewrap gets a read-only root and a writable session directory. |
 | 2026-11-02 | Team state is one JSON file plus in-process tasks | The roster and tasks must survive a restart; live joins must not. One locked state and one atomic file keep the seven tools consistent without a second database. |
 | 2026-11-02 | Git tools wrap the real `git` executable | A patch applier and worktree manager are security-sensitive and already maintained. The tools validate refs and paths at the boundary, then delegate to `git` rather than reimplementing object storage. |
+| 2026-11-02 | Credentials live in one `0600` JSON file | The environment stays the first source, and the stored file is the fallback for a user who does not want a key in every shell. The temp-file rename keeps a partially written secret unreadable. |
 | 2026-11-02 | Jobs use a durable directory, not in-memory handles | A job must survive the process that started it. Pid, output, and status files make listing and output reads independent of the agent. |
 | 2026-11-02 | MCP tools are prefixed with the server name | Two servers can expose the same tool name; the registry rejects duplicates. The prefix keeps both available. |
 | 2026-11-02 | The web run is a POST SSE stream | `EventSource` only supports GET. A POST stream lets the browser send the task and consume frames from one request. |

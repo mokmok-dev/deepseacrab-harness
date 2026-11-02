@@ -10,10 +10,10 @@ The headless product works end to end. A task can be submitted from the CLI, the
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 705 tests passed.
+- `cargo test --workspace`: 726 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The fifteen crates produced 900 caught viable mutants and 313 unviable mutants.
+- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The sixteen crates produced 926 caught viable mutants and 314 unviable mutants.
 - `dsh web` was exercised over a real socket with a local SSE provider: health, the HTML page, the tool catalog, and a completed run with a `text` and `final` event.
 
 ## Quick start
@@ -75,6 +75,9 @@ cargo run -p dsh-cli --bin dsh -- sdk
 | `dsh sessions repair <id>` | Seal a turn left open by a process loss. |
 | `dsh schedules list` | List durable scheduled follow-ups. |
 | `dsh schedules run-due` | Run every schedule whose next run time has passed. |
+| `dsh auth set <provider>` | Store a provider secret read from stdin. |
+| `dsh auth list` | List providers with stored secrets. |
+| `dsh auth remove <provider>` | Remove a stored provider secret. |
 | `dsh tools` | List the model-facing tool registry. |
 | `dsh config` | Print effective configuration without secrets. |
 | `dsh web` | Serve the browser client on `127.0.0.1:3080`. |
@@ -86,7 +89,7 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | none | Credential for the Messages API. Required for `run`. |
+| `DEEPSEEK_API_KEY` | none | Credential for the Messages API. Or run `dsh auth set deepseek`. |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/anthropic` | Messages-compatible root. |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | Route model id. |
 | `DSH_API_KEY_ENV` | `DEEPSEEK_API_KEY` | Alternate credential variable name. |
@@ -106,7 +109,7 @@ Exit code `0` means the turn completed. `1` means the turn failed, was cancelled
 
 ## Architecture
 
-The workspace is fifteen crates. Dependencies point downward only.
+The workspace is sixteen crates. Dependencies point downward only.
 
 | Crate | Owns |
 |---|---|
@@ -120,6 +123,7 @@ The workspace is fifteen crates. Dependencies point downward only.
 | `dsh-terminal` | Persistent PTY terminals and their tools. |
 | `dsh-lsp` | LSP stdio client and the `lsp` tool. |
 | `dsh-sandbox` | Bubblewrap confinement for shell execution. |
+| `dsh-credentials` | Local provider credential store with owner-only file mode. |
 | `dsh-mcp` | MCP stdio client that registers external tools. |
 | `dsh-agent` | Turn and step driver, streaming assembly, tool batching, subagents. |
 | `dsh-web` | Browser client with JSON and SSE routes. |
@@ -135,6 +139,8 @@ The model-facing registry contains 40 first-party tools in a run: `apply_patch`,
 The default permission mode is `workspace-write`. Filesystem tools resolve paths lexically and refuse paths outside the session directory. `read-only` refuses writes, shell execution, and network fetches. `danger-full-access` removes the path boundary and should be used deliberately.
 
 Set `DSH_SANDBOX=bubblewrap` to wrap `bash` execution in a bubblewrap mount namespace with a read-only root and a writable session directory. The terminal tools remain process-local PTYs and are not wrapped yet.
+
+The credential fallback reads `$DSH_HOME/credentials.json`, written with mode `0600`. An environment key takes precedence over a stored one.
 
 Tool panics are contained and returned as tool errors, so the matching tool result is always settled in the log.
 

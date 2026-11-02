@@ -493,6 +493,7 @@ dependencies = [
  "clap",
  "dsh-agent",
  "dsh-core",
+ "dsh-credentials",
  "dsh-jobs",
  "dsh-llm",
  "dsh-lsp",
@@ -533,6 +534,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "dsh-credentials"
+version = "2026.11.1"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

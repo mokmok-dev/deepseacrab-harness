@@ -21,6 +21,8 @@ pub enum Command {
     Sessions(SessionsArgs),
     /// Inspect or run durable schedules.
     Schedules(SchedulesArgs),
+    /// Manage locally stored provider credentials.
+    Auth(AuthArgs),
     /// List registered tools.
     Tools,
     /// Print effective configuration.
@@ -127,6 +129,31 @@ pub enum SchedulesCommand {
     List,
     /// Run every schedule whose next run time has passed.
     RunDue,
+}
+
+/// Credential commands.
+#[derive(Debug, Args)]
+pub struct AuthArgs {
+    /// Credential operation.
+    #[command(subcommand)]
+    pub command: AuthCommand,
+}
+
+/// Credential operations.
+#[derive(Debug, Subcommand)]
+pub enum AuthCommand {
+    /// Store a provider secret read from stdin.
+    Set {
+        /// Provider name, such as `deepseek`.
+        provider: String,
+    },
+    /// List providers with stored secrets.
+    List,
+    /// Remove a provider secret.
+    Remove {
+        /// Provider name.
+        provider: String,
+    },
 }
 
 #[cfg(test)]
@@ -248,6 +275,22 @@ mod tests {
             panic!("expected schedules");
         };
         assert!(matches!(args.command, SchedulesCommand::RunDue));
+    }
+
+    #[test]
+    fn parses_auth_commands() {
+        let cli = Cli::try_parse_from(["dsh", "auth", "set", "deepseek"]).expect("set");
+        let Command::Auth(args) = cli.command else {
+            panic!("expected auth");
+        };
+        assert!(matches!(
+            args.command,
+            AuthCommand::Set { ref provider } if provider == "deepseek"
+        ));
+        let cli = Cli::try_parse_from(["dsh", "auth", "list"]).expect("list");
+        assert!(matches!(cli.command, Command::Auth(_)));
+        let cli = Cli::try_parse_from(["dsh", "auth", "remove", "deepseek"]).expect("remove");
+        assert!(matches!(cli.command, Command::Auth(_)));
     }
 
     #[test]
