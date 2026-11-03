@@ -15,25 +15,80 @@ export type SessionSummary = {
   event_count: number;
 };
 
+export type ProjectView = {
+  name: string;
+  path: string;
+  exists: boolean;
+  builtin: boolean;
+};
+
 export async function fetchSessions(): Promise<SessionSummary[]> {
   const response = await fetch('/api/sessions');
-  if (!response.ok) {
-    throw new Error(`Could not load sessions (${response.status}).`);
-  }
+  if (!response.ok) throw await responseError(response, 'Could not load sessions');
   return parseSessionSummaries(await response.json());
 }
 
 export async function fetchSessionRecords(id: string): Promise<EventRecord[] | null> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
   if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`Could not load the session log (${response.status}).`);
-  }
+  if (!response.ok) throw await responseError(response, 'Could not load the session log');
   return parseRecords(await response.json());
+}
+
+export async function fetchProjects(): Promise<ProjectView[]> {
+  const response = await fetch('/api/projects');
+  if (!response.ok) throw await responseError(response, 'Could not load projects');
+  return parseProjects(await response.json());
+}
+
+export async function addProject(path: string): Promise<ProjectView> {
+  const response = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!response.ok) throw await responseError(response, 'Could not add the project');
+  const project = parseProject(await response.json());
+  if (project === null) throw new Error('The server did not return the project.');
+  return project;
+}
+
+export async function removeProject(path: string): Promise<void> {
+  const response = await fetch('/api/projects', {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!response.ok) throw await responseError(response, 'Could not remove the project');
+}
+
+export async function createSession(project: string | null): Promise<SessionSummary> {
+  const response = await fetch('/api/sessions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ project }),
+  });
+  if (!response.ok) throw await responseError(response, 'Could not start a session');
+  const summary = parseSessionSummary(await response.json());
+  if (summary === null) throw new Error('The server did not return the new session.');
+  return summary;
 }
 
 export function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+async function responseError(response: Response, fallback: string): Promise<Error> {
+  try {
+    const payload: unknown = await response.json();
+    if (isObject(payload)) {
+      const message = stringField(payload, 'error');
+      if (message !== null && message !== '') return new Error(message);
+    }
+  } catch {
+    // The body carried no JSON to read.
+  }
+  return new Error(`${fallback} (${response.status}).`);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -53,27 +108,51 @@ function numberField(source: Record<string, unknown>, key: string): number | nul
 function parseSessionSummaries(value: unknown): SessionSummary[] {
   if (!Array.isArray(value)) throw new Error('The session list was not an array.');
   return value.flatMap((entry) => {
-    if (!isObject(entry)) {
+    const summary = parseSessionSummary(entry);
+    if (summary === null) {
       console.warn('Skipping an unreadable session summary.', entry);
       return [];
     }
-    const id = stringField(entry, 'id');
-    const createdAt = numberField(entry, 'created_at');
-    const eventCount = numberField(entry, 'event_count');
-    if (id === null || createdAt === null || eventCount === null) {
-      console.warn('Skipping an unreadable session summary.', entry);
-      return [];
-    }
-    return [
-      {
-        id,
-        created_at: createdAt,
-        cwd: stringField(entry, 'cwd'),
-        title: stringField(entry, 'title'),
-        event_count: eventCount,
-      },
-    ];
+    return [summary];
   });
+}
+
+function parseSessionSummary(value: unknown): SessionSummary | null {
+  if (!isObject(value)) return null;
+  const id = stringField(value, 'id');
+  const createdAt = numberField(value, 'created_at');
+  const eventCount = numberField(value, 'event_count');
+  if (id === null || createdAt === null || eventCount === null) return null;
+  return {
+    id,
+    created_at: createdAt,
+    cwd: stringField(value, 'cwd'),
+    title: stringField(value, 'title'),
+    event_count: eventCount,
+  };
+}
+
+function parseProjects(value: unknown): ProjectView[] {
+  if (!Array.isArray(value)) throw new Error('The project list was not an array.');
+  return value.flatMap((entry) => {
+    const project = parseProject(entry);
+    if (project === null) {
+      console.warn('Skipping an unreadable project.', entry);
+      return [];
+    }
+    return [project];
+  });
+}
+
+function parseProject(value: unknown): ProjectView | null {
+  if (!isObject(value)) return null;
+  const name = stringField(value, 'name');
+  const path = stringField(value, 'path');
+  const exists = value.exists;
+  const builtin = value.builtin;
+  if (name === null || path === null) return null;
+  if (typeof exists !== 'boolean' || typeof builtin !== 'boolean') return null;
+  return { name, path, exists, builtin };
 }
 
 function parseRecords(value: unknown): EventRecord[] {
@@ -123,12 +202,15 @@ function parseEvent(value: unknown): SessionEvent | null {
       return summary === null || keepFrom === null ? null : { type, summary, keep_from: keepFrom };
     }
     case 'session_created':
+    case 'working_directory_changed': {
+      const cwd = stringField(value, 'cwd');
+      return { type, cwd };
+    }
     case 'turn_started':
     case 'step_started':
     case 'todo_written':
     case 'plan_set':
     case 'goal_set':
-    case 'working_directory_changed':
     case 'retry_attempt':
       return { type };
     default:

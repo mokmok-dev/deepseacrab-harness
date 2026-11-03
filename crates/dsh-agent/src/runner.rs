@@ -10,7 +10,7 @@ use dsh_core::{
 };
 use futures_util::{StreamExt, stream};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -285,8 +285,7 @@ impl AgentLoop {
         for _ in 0..self.config.max_steps {
             steps = steps.saturating_add(1);
             self.maybe_compact(session_id, &mut messages, turn_start.seq)?;
-            let cwd = latest_cwd(&self.store.load(session_id)?)
-                .unwrap_or_else(|| self.config.cwd.clone());
+            let cwd = session_cwd(&self.store.load(session_id)?, &self.config.cwd);
             let step_id = StepId::generate();
             self.append(
                 session_id,
@@ -816,11 +815,25 @@ fn summarize_messages(messages: &[Message]) -> String {
     summary.chars().take(4000).collect()
 }
 
-fn latest_cwd(events: &[EventRecord]) -> Option<PathBuf> {
-    events.iter().rev().find_map(|record| match &record.event {
-        SessionEvent::WorkingDirectoryChanged { cwd } => Some(PathBuf::from(cwd)),
-        _ => None,
-    })
+/// The directory this session's tools run in.
+///
+/// An empty recorded value is skipped because `Path::starts_with("")` is true
+/// for every path, so it would defeat workspace containment.
+fn session_cwd(events: &[EventRecord], fallback: &Path) -> PathBuf {
+    events
+        .iter()
+        .rev()
+        .find_map(|record| match &record.event {
+            SessionEvent::WorkingDirectoryChanged { cwd } if !cwd.is_empty() => {
+                Some(PathBuf::from(cwd))
+            }
+            SessionEvent::SessionCreated { cwd, .. } => cwd
+                .as_deref()
+                .filter(|cwd| !cwd.is_empty())
+                .map(PathBuf::from),
+            _ => None,
+        })
+        .unwrap_or_else(|| fallback.to_path_buf())
 }
 
 fn retry_delay(base_ms: u64, attempt: u32) -> u64 {
@@ -1816,6 +1829,114 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], "changed to /tmp/next");
         assert_eq!(results[1], "/tmp/next");
+    }
+
+    fn record(seq: u64, event: SessionEvent) -> EventRecord {
+        EventRecord {
+            seq: EventSeq::new(seq),
+            at: 0,
+            event,
+        }
+    }
+
+    fn created(cwd: Option<&str>) -> SessionEvent {
+        SessionEvent::SessionCreated {
+            cwd: cwd.map(str::to_string),
+            created_at: 0,
+            format_version: 1,
+        }
+    }
+
+    fn changed(cwd: &str) -> SessionEvent {
+        SessionEvent::WorkingDirectoryChanged {
+            cwd: cwd.to_string(),
+        }
+    }
+
+    #[test]
+    fn session_cwd_prefers_the_newest_directory_change() {
+        let events = [
+            record(0, created(Some("/created"))),
+            record(1, changed("/older")),
+            record(2, changed("/newer")),
+        ];
+        assert_eq!(
+            session_cwd(&events, Path::new("/fallback")),
+            PathBuf::from("/newer")
+        );
+    }
+
+    #[test]
+    fn session_cwd_falls_back_to_the_creation_directory() {
+        let events = [record(0, created(Some("/created")))];
+        assert_eq!(
+            session_cwd(&events, Path::new("/fallback")),
+            PathBuf::from("/created")
+        );
+    }
+
+    #[test]
+    fn session_cwd_falls_back_to_the_configured_directory() {
+        let events = [record(0, created(None))];
+        assert_eq!(
+            session_cwd(&events, Path::new("/fallback")),
+            PathBuf::from("/fallback")
+        );
+        assert_eq!(
+            session_cwd(&[], Path::new("/fallback")),
+            PathBuf::from("/fallback")
+        );
+    }
+
+    #[test]
+    fn session_cwd_skips_an_empty_directory_change() {
+        let events = [record(0, created(Some("/created"))), record(1, changed(""))];
+        assert_eq!(
+            session_cwd(&events, Path::new("/fallback")),
+            PathBuf::from("/created")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_runs_tools_in_its_recorded_directory() {
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            tool_response("call-1", "pwd", "{}"),
+            text_response("done"),
+        ]));
+        let store = Arc::new(MockStore::default());
+        let session_id = SessionId::generate();
+        store
+            .create(&SessionHeader::new(
+                session_id.clone(),
+                1,
+                Some("/project".to_string()),
+            ))
+            .expect("create");
+        let mut registry = tools();
+        registry.insert(Arc::new(PwdTool)).expect("pwd");
+        let loop_ = AgentLoop::new(
+            store.clone(),
+            provider,
+            registry,
+            config(),
+            Arc::new(FixedClock(1_000)),
+        )
+        .expect("loop");
+        let outcome = loop_
+            .run(&session_id, "where am I", CancellationToken::new(), None)
+            .await
+            .expect("run");
+        assert!(outcome.is_success());
+        let results: Vec<_> = store
+            .load(&session_id)
+            .expect("load")
+            .iter()
+            .filter_map(|record| match &record.event {
+                SessionEvent::ToolResult { message } => Some(message.text_content()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, ["/project"]);
     }
 
     #[tokio::test]

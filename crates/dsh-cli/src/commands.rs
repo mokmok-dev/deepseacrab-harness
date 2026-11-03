@@ -171,6 +171,7 @@ async fn web(bind: String) -> anyhow::Result<ExitCode> {
         tools,
         config: agent_config,
         clock: Arc::new(SystemClock) as Arc<dyn Clock>,
+        projects: Arc::new(dsh_web::ProjectStore::at_home(&config.home)),
         runs: dsh_web::RunRegistry::new(),
     };
     let cancel = CancellationToken::new();

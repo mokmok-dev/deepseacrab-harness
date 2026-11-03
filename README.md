@@ -10,11 +10,11 @@ The headless product works end to end. A task can be submitted from the CLI, the
 
 Verified on 2026-11-02:
 
-- `cargo test --workspace`: 869 tests passed.
+- `cargo test --workspace`: 904 tests passed.
 - `cargo clippy --workspace --all-targets -- --deny warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- `cargo mutants` across all crates: 0 missed mutants and 0 timeouts. The eighteen crates produced 1031 caught viable mutants and 347 unviable mutants.
-- `dsh web` was exercised over a real socket with a local Messages provider: health, the built React page, the tool catalog, a streamed text run, a tool run with arguments and output, session replay, Stop cancellation, and a mobile viewport.
+- `cargo mutants` across all crates on the tree before project selection: 0 missed mutants and 0 timeouts. The eighteen crates produced 1031 caught viable mutants and 347 unviable mutants.
+- `dsh web` was exercised over a real socket with a local Messages provider: health, the built React page, the tool catalog, project add and removal, session creation in a chosen project, a tool run that executed in that project, session replay, Stop cancellation, and a mobile viewport.
 
 ## Quick start
 
@@ -85,6 +85,8 @@ pnpm --filter @deepseacrab-harness/web build
 ```
 
 The page talks to `POST /api/chat`, an AG-UI Server-Sent Events route. The client sends its session id as the AG-UI `threadId` and renders text, reasoning, and tool-call parts. The durable session log stays the source of truth: opening a session replays `GET /api/sessions/{id}`. A second run on the same session returns `409`, and dropping the response body, including a browser Stop or a closed tab, cancels the run.
+
+Starting a chat asks for a project first. A project is a local directory added from the picker by its absolute path. The path is canonicalized when it is added and stored in `$DSH_HOME/projects.json`, and the picker always offers the directory `dsh web` was started in. The client sends the chosen path to `POST /api/sessions`, which creates the session and records that directory in the session header before the first message. Tools, shell commands, permission containment, and delegated child sessions then run there. A session that already exists keeps the directory recorded in its log, and the picker disables a project whose directory has been deleted.
 
 Serve the JSON-RPC SDK on stdio:
 

@@ -8,9 +8,12 @@
 
 mod agui;
 mod chat;
+mod projects;
 
 pub use chat::RunRegistry;
+pub use projects::{Project, ProjectError, ProjectStore, ProjectView};
 
+use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
@@ -18,9 +21,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use dsh_agent::{AgentConfig, AgentError};
 use dsh_core::{
-    Clock, EventRecord, IdError, LlmProvider, SessionId, SessionStore, SessionSummary, StoreError,
-    ToolRegistry, ToolSchema,
+    Clock, EventRecord, IdError, LlmProvider, SessionHeader, SessionId, SessionStore,
+    SessionSummary, StoreError, ToolRegistry, ToolSchema,
 };
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use thiserror::Error;
@@ -45,6 +49,7 @@ pub struct WebState {
     pub config: AgentConfig,
     /// Wall clock stamped on durable writes.
     pub clock: Arc<dyn Clock>,
+    pub projects: Arc<ProjectStore>,
     pub runs: RunRegistry,
 }
 
@@ -72,7 +77,11 @@ pub(crate) enum ApiError {
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
+    NotFound(String),
+    #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    Internal(String),
     /// Durable storage failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -84,13 +93,29 @@ impl From<IdError> for ApiError {
     }
 }
 
+impl From<ProjectError> for ApiError {
+    fn from(error: ProjectError) -> Self {
+        let message = error.to_string();
+        match error {
+            ProjectError::InvalidPath { .. }
+            | ProjectError::Unresolved { .. }
+            | ProjectError::NotADirectory { .. }
+            | ProjectError::Unavailable { .. } => Self::BadRequest(message),
+            ProjectError::Unknown(_) => Self::NotFound(message),
+            ProjectError::Read { .. } | ProjectError::Write { .. } | ProjectError::Encoding(_) => {
+                Self::Internal(message)
+            }
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::Conflict(_) => StatusCode::CONFLICT,
-            Self::Store(StoreError::NotFound(_)) => StatusCode::NOT_FOUND,
-            Self::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NotFound(_) | Self::Store(StoreError::NotFound(_)) => StatusCode::NOT_FOUND,
+            Self::Conflict(_) | Self::Store(StoreError::AlreadyExists(_)) => StatusCode::CONFLICT,
+            Self::Internal(_) | Self::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (
             status,
@@ -105,8 +130,12 @@ pub fn router(state: WebState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/api/health", get(health))
-        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/{id}", get(session_log))
+        .route(
+            "/api/projects",
+            get(list_projects).post(add_project).delete(remove_project),
+        )
         .route("/api/tools", get(list_tools))
         .route(
             "/api/chat",
@@ -148,6 +177,98 @@ async fn list_sessions(
     Ok(Json(state.store.list()?))
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct CreateSessionBody {
+    #[serde(default)]
+    project: Option<String>,
+}
+
+async fn create_session(
+    State(state): State<WebState>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<SessionSummary>), ApiError> {
+    let input: CreateSessionBody = if body.is_empty() {
+        CreateSessionBody::default()
+    } else {
+        parse_body(&body)?
+    };
+    let cwd = state
+        .projects
+        .resolve(&state.config.cwd, input.project.as_deref())?;
+    let id = SessionId::generate();
+    let created_at = state.clock.now_millis();
+    let header = SessionHeader::new(id.clone(), created_at, Some(cwd.display().to_string()));
+    state.store.create(&header)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(SessionSummary {
+            id,
+            created_at,
+            cwd: header.cwd,
+            title: None,
+            event_count: 1,
+        }),
+    ))
+}
+
+async fn list_projects(State(state): State<WebState>) -> Result<Json<Vec<ProjectView>>, ApiError> {
+    Ok(Json(state.projects.views(&state.config.cwd)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectBody {
+    path: String,
+}
+
+/// Store one directory. The server workspace is already selectable, so it is
+/// answered as a view rather than stored a second time.
+async fn add_project(
+    State(state): State<WebState>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<ProjectView>), ApiError> {
+    let input: ProjectBody = parse_body(&body)?;
+    let canonical = projects::canonical_directory(&input.path)?;
+    if canonical == state.config.cwd {
+        return Ok((
+            StatusCode::OK,
+            Json(projects::workspace_view(&state.config.cwd)),
+        ));
+    }
+    let (project, created) = state.projects.add(&input.path)?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(projects::view(&project))))
+}
+
+/// The path travels in the body so a canonical path never enters a URL.
+async fn remove_project(
+    State(state): State<WebState>,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let input: ProjectBody = parse_body(&body)?;
+    if input.path == state.config.cwd.display().to_string() {
+        return Err(ApiError::Conflict(
+            "the server workspace cannot be removed".to_string(),
+        ));
+    }
+    if state.projects.remove(&input.path)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound(format!(
+            "unknown project {}",
+            input.path
+        )))
+    }
+}
+
+fn parse_body<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
+    serde_json::from_slice(body)
+        .map_err(|error| ApiError::BadRequest(format!("invalid request body: {error}")))
+}
+
 async fn session_log(
     State(state): State<WebState>,
     Path(raw): Path<String>,
@@ -183,7 +304,7 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::{Value, json};
     use std::collections::{BTreeMap, VecDeque};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::Duration;
     use tower::ServiceExt;
@@ -316,6 +437,39 @@ mod tests {
         }
     }
 
+    struct ConflictingStore;
+
+    impl SessionStore for ConflictingStore {
+        fn create(&self, header: &SessionHeader) -> Result<(), StoreError> {
+            Err(StoreError::AlreadyExists(header.id.clone()))
+        }
+
+        fn append(
+            &self,
+            _session_id: &SessionId,
+            _at: i64,
+            _event: SessionEvent,
+        ) -> Result<EventRecord, StoreError> {
+            Err(StoreError::Backend("not used".to_string()))
+        }
+
+        fn load(&self, _session_id: &SessionId) -> Result<Vec<EventRecord>, StoreError> {
+            Ok(Vec::new())
+        }
+
+        fn list(&self) -> Result<Vec<SessionSummary>, StoreError> {
+            Ok(Vec::new())
+        }
+
+        fn has(&self, _session_id: &SessionId) -> Result<bool, StoreError> {
+            Ok(false)
+        }
+
+        fn delete(&self, _session_id: &SessionId) -> Result<bool, StoreError> {
+            Ok(false)
+        }
+    }
+
     struct ScriptedProvider {
         name: &'static str,
         responses: Mutex<VecDeque<Vec<Result<StreamEvent, LlmError>>>>,
@@ -393,6 +547,24 @@ mod tests {
         }
     }
 
+    struct CwdTool;
+
+    #[async_trait]
+    impl Tool for CwdTool {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "cwd",
+                "report the session workspace",
+                json!({"type": "object"}),
+            )
+            .expect("schema")
+        }
+
+        async fn execute(&self, context: &ToolContext, _arguments: Value) -> ToolOutcome {
+            ToolOutcome::text(context.cwd.display().to_string())
+        }
+    }
+
     fn config() -> AgentConfig {
         let mut config = AgentConfig::new(
             ModelId::parse("test-model").expect("model"),
@@ -412,12 +584,22 @@ mod tests {
     }
 
     fn web_state(store: Arc<dyn SessionStore>, provider: Arc<dyn LlmProvider>) -> WebState {
+        web_state_with_tools(store, provider, tools())
+    }
+
+    fn web_state_with_tools(
+        store: Arc<dyn SessionStore>,
+        provider: Arc<dyn LlmProvider>,
+        registry: ToolRegistry,
+    ) -> WebState {
+        let projects = tempfile::tempdir().expect("projects");
         WebState {
             store,
             provider,
-            tools: tools(),
+            tools: registry,
             config: config(),
             clock: Arc::new(FixedClock(1_000)),
+            projects: Arc::new(ProjectStore::at_home(projects.path())),
             runs: chat::RunRegistry::new(),
         }
     }
@@ -474,6 +656,15 @@ mod tests {
     fn post_request(uri: &str, body: &str) -> Request<Body> {
         Request::builder()
             .method("POST")
+            .uri(uri)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    }
+
+    fn delete_request(uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method("DELETE")
             .uri(uri)
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from(body.to_string()))
@@ -630,6 +821,382 @@ mod tests {
                 .as_str()
                 .is_some_and(|error| !error.is_empty())
         );
+    }
+
+    fn cwd_then_text_provider() -> ScriptedProvider {
+        let call = ToolCallId::parse("call-1").expect("call id");
+        ScriptedProvider::new(vec![
+            vec![
+                Ok(StreamEvent::ToolCallStart {
+                    id: call.clone(),
+                    name: "cwd".to_string(),
+                }),
+                Ok(StreamEvent::ToolCallDelta {
+                    id: call,
+                    arguments: "{}".to_string(),
+                }),
+                Ok(StreamEvent::Finish {
+                    reason: FinishReason::ToolCalls,
+                }),
+            ],
+            vec![
+                Ok(StreamEvent::TextDelta {
+                    text: "done".to_string(),
+                }),
+                Ok(StreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                }),
+            ],
+        ])
+    }
+
+    fn state_for(store: Arc<dyn SessionStore>, workspace: &Path) -> WebState {
+        let mut state = web_state(store, Arc::new(text_provider("hi")));
+        state.config.cwd = workspace.to_path_buf();
+        state
+    }
+
+    fn project_path(directory: &tempfile::TempDir) -> String {
+        directory
+            .path()
+            .canonicalize()
+            .expect("canonical")
+            .display()
+            .to_string()
+    }
+
+    fn project_name(path: &str) -> String {
+        Path::new(path)
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[tokio::test]
+    async fn the_project_list_starts_with_the_workspace() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = project_path(&workspace);
+        let state = state_for(Arc::new(MockStore::default()), Path::new(&root));
+
+        let response = execute(state, get_request("/api/projects")).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(&body_text(response).await),
+            json!([{
+                "name": "Workspace",
+                "path": root,
+                "exists": true,
+                "builtin": true,
+            }])
+        );
+    }
+
+    #[tokio::test]
+    async fn an_added_project_reports_whether_its_directory_exists() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let project = tempfile::tempdir().expect("project");
+        let root = project_path(&workspace);
+        let path = project_path(&project);
+        let state = state_for(Arc::new(MockStore::default()), Path::new(&root));
+
+        let response = execute(
+            state.clone(),
+            post_request("/api/projects", &json!({ "path": path }).to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            json_body(&body_text(response).await),
+            json!({
+                "name": project_name(&path),
+                "path": path,
+                "exists": true,
+                "builtin": false,
+            })
+        );
+
+        drop(project);
+
+        let response = execute(state, get_request("/api/projects")).await;
+        let views = json_body(&body_text(response).await);
+        assert_eq!(views.as_array().expect("array").len(), 2);
+        assert_eq!(views[1]["path"], path);
+        assert_eq!(views[1]["exists"], false);
+    }
+
+    #[tokio::test]
+    async fn adding_a_project_twice_is_not_a_new_project() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let project = tempfile::tempdir().expect("project");
+        let root = project_path(&workspace);
+        let path = project_path(&project);
+        let state = state_for(Arc::new(MockStore::default()), Path::new(&root));
+        let body = json!({ "path": path }).to_string();
+
+        execute(state.clone(), post_request("/api/projects", &body)).await;
+        let response = execute(state.clone(), post_request("/api/projects", &body)).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = execute(state, get_request("/api/projects")).await;
+        let views = json_body(&body_text(response).await);
+        assert_eq!(views.as_array().expect("array").len(), 2);
+        assert_eq!(views[1]["path"], path);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_project_path_is_a_bad_request() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = project_path(&workspace);
+        let state = state_for(Arc::new(MockStore::default()), Path::new(&root));
+
+        let response = execute(
+            state,
+            post_request(
+                "/api/projects",
+                &json!({ "path": "relative/dir" }).to_string(),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = json_body(&body_text(response).await);
+        assert!(
+            error["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("must be absolute")),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_server_workspace_cannot_be_removed() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = project_path(&workspace);
+        let state = state_for(Arc::new(MockStore::default()), Path::new(&root));
+
+        let response = execute(
+            state.clone(),
+            delete_request("/api/projects", &json!({ "path": root }).to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = execute(
+            state,
+            post_request("/api/projects", &json!({ "path": root }).to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let view = json_body(&body_text(response).await);
+        assert_eq!(view["builtin"], true);
+        assert_eq!(view["name"], "Workspace");
+    }
+
+    #[tokio::test]
+    async fn removing_a_project_removes_its_row() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let project = tempfile::tempdir().expect("project");
+        let root = project_path(&workspace);
+        let path = project_path(&project);
+        let state = state_for(Arc::new(MockStore::default()), Path::new(&root));
+        execute(
+            state.clone(),
+            post_request("/api/projects", &json!({ "path": path }).to_string()),
+        )
+        .await;
+
+        let response = execute(
+            state.clone(),
+            delete_request("/api/projects", &json!({ "path": path }).to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = execute(state, get_request("/api/projects")).await;
+        let views = json_body(&body_text(response).await);
+        assert_eq!(views.as_array().expect("array").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn removing_an_unknown_project_is_not_found() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = project_path(&workspace);
+        let state = state_for(Arc::new(MockStore::default()), Path::new(&root));
+
+        let response = execute(
+            state,
+            delete_request("/api/projects", &json!({ "path": "/nowhere" }).to_string()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let error = json_body(&body_text(response).await);
+        assert!(
+            error["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("unknown project")),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_created_in_a_project_records_that_directory() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let project = tempfile::tempdir().expect("project");
+        let root = project_path(&workspace);
+        let path = project_path(&project);
+        let store = Arc::new(MockStore::default());
+        let state = state_for(store.clone(), Path::new(&root));
+        execute(
+            state.clone(),
+            post_request("/api/projects", &json!({ "path": path }).to_string()),
+        )
+        .await;
+
+        let response = execute(
+            state,
+            post_request("/api/sessions", &json!({ "project": path }).to_string()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let summary = json_body(&body_text(response).await);
+        assert_eq!(summary["cwd"], path);
+        assert_eq!(summary["title"], Value::Null);
+        assert_eq!(summary["event_count"], 1);
+        let id = SessionId::parse(summary["id"].as_str().expect("id")).expect("id");
+        let records = store.load(&id).expect("log");
+        match &records[0].event {
+            SessionEvent::SessionCreated { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some(path.as_str()));
+            }
+            other => panic!("expected session_created, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_created_without_a_project_uses_the_workspace() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = project_path(&workspace);
+        let store = Arc::new(MockStore::default());
+        let state = state_for(store.clone(), Path::new(&root));
+
+        let response = execute(state, post_request("/api/sessions", "{}")).await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let summary = json_body(&body_text(response).await);
+        assert_eq!(summary["cwd"], root);
+        let id = SessionId::parse(summary["id"].as_str().expect("id")).expect("id");
+        assert!(store.has(&id).expect("has"));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_project_creates_no_session() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = project_path(&workspace);
+        let store = Arc::new(MockStore::default());
+        let state = state_for(store.clone(), Path::new(&root));
+
+        for request in ["../../etc", "/nowhere/at/all"] {
+            let response = execute(
+                state.clone(),
+                post_request("/api/sessions", &json!({ "project": request }).to_string()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{request}");
+            assert!(
+                json_body(&body_text(response).await)["error"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("unknown project")),
+                "{request}"
+            );
+        }
+        assert_eq!(store.list().expect("list"), [] as [SessionSummary; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_registered_project_whose_directory_vanished_is_rejected() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let project = tempfile::tempdir().expect("project");
+        let root = project_path(&workspace);
+        let path = project_path(&project);
+        let store = Arc::new(MockStore::default());
+        let state = state_for(store.clone(), Path::new(&root));
+        execute(
+            state.clone(),
+            post_request("/api/projects", &json!({ "path": path }).to_string()),
+        )
+        .await;
+        drop(project);
+
+        let response = execute(
+            state,
+            post_request("/api/sessions", &json!({ "project": path }).to_string()),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = json_body(&body_text(response).await);
+        assert!(
+            error["error"]
+                .as_str()
+                .is_some_and(|text| text.contains(&path)),
+            "{error}"
+        );
+        assert_eq!(store.list().expect("list"), [] as [SessionSummary; 0]);
+    }
+
+    #[tokio::test]
+    async fn an_existing_session_id_is_a_conflict() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let root = project_path(&workspace);
+        let state = state_for(Arc::new(ConflictingStore), Path::new(&root));
+
+        let response = execute(state, post_request("/api/sessions", "{}")).await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            json_body(&body_text(response).await)["error"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_project_session_runs_tools_in_the_project() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let project = tempfile::tempdir().expect("project");
+        let root = project_path(&workspace);
+        let path = project_path(&project);
+        let store = Arc::new(MockStore::default());
+        let mut registry = tools();
+        registry.insert(Arc::new(CwdTool)).expect("cwd");
+        let mut state = web_state_with_tools(store, Arc::new(cwd_then_text_provider()), registry);
+        state.config.cwd = PathBuf::from(&root);
+        execute(
+            state.clone(),
+            post_request("/api/projects", &json!({ "path": path }).to_string()),
+        )
+        .await;
+        let response = execute(
+            state.clone(),
+            post_request("/api/sessions", &json!({ "project": path }).to_string()),
+        )
+        .await;
+        let summary = json_body(&body_text(response).await);
+        let id = summary["id"].as_str().expect("id").to_string();
+
+        let response = execute(state, agui_request(&agui_body(&id, "run-1", "where am I"))).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let frames = frames(&body_text(response).await);
+        let result = frames
+            .iter()
+            .find(|frame| frame["type"] == "TOOL_CALL_RESULT")
+            .expect("tool result");
+        assert_eq!(result["content"], path);
     }
 
     #[tokio::test]
